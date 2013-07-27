@@ -1,8 +1,58 @@
-With the latest release of their Architecture Instruction Set Extensions Programming Reference Intel has finally lifted the veil on a new CPU feature to debut in next year's Haswell line of processors. This new feature is called Supervisor Mode Access Prevention (SMAP) and there's a reason why its name so closely resembles Supervisor Mode Execution Prevention (SMEP), the feature that debuted with Ivy Bridge processors a few months ago. While the purpose of SMEP was to control instruction fetches and code execution from supervisor mode (traditionally used by the kernel component of operating systems), SMAP is concerned with data accesses from supervisor mode. In particular, SMEP, when enabled, prevents code execution from userland memory pages by the kernel (the favourite exploit technique against kernel security bugs), whereas SMAP will prevent unintended data accesses to userland memory. The twist in the story and the reason why these security features couldn't be implemented as one lies in the fact that the kernel does have legitimate need to access data in userland memory at times while no contemporary kernel needs to execute code from there. In other words, while SMEP can be enabled unconditionally by flipping a bit at boot time, SMAP needs more care because it has to be disabled/enabled around legitimate accessor functions in the kernel. Intel has added two new instructions for this very purpose (CLAC/STAC) and repurposed the alignment check status bit in supervisor mode to enable quick switching around SMAP at runtime. This will require more extensive changes in kernel code than SMEP did but the amount of code is still quite managable. Third party kernel modules that don't use the kernel's userland accessor functions will have to take care of switching SMAP on/off themselves.
+With the latest release of their Architecture Instruction Set Extensions
+Programming Reference Intel has finally lifted the veil on a new CPU feature
+to debut in next year's Haswell line of processors. This new feature is
+called Supervisor Mode Access Prevention (SMAP) and there's a reason why
+its name so closely resembles Supervisor Mode Execution Prevention (SMEP),
+the feature that debuted with Ivy Bridge processors a few months ago. While the
+purpose of SMEP was to control instruction fetches and code execution from
+supervisor mode (traditionally used by the kernel component of operating
+systems), SMAP is concerned with data accesses from supervisor mode.
+In particular, SMEP, when enabled, prevents code execution from userland memory
+pages by the kernel (the favourite exploit technique against kernel security
+bugs), whereas SMAP will prevent unintended data accesses to userland memory.
+The twist in the story and the reason why these security features couldn't be
+implemented as one lies in the fact that the kernel does have legitimate need
+to access data in userland memory at times while no contemporary kernel needs
+to execute code from there. In other words, while SMEP can be enabled
+unconditionally by flipping a bit at boot time, SMAP needs more care because it
+has to be disabled/enabled around legitimate accessor functions in the kernel.
+Intel has added two new instructions for this very purpose (CLAC/STAC) and
+repurposed the alignment check status bit in supervisor mode to enable quick
+switching around SMAP at runtime. This will require more extensive changes in
+kernel code than SMEP did but the amount of code is still quite managable.
+Third party kernel modules that don't use the kernel's userland accessor
+functions will have to take care of switching SMAP on/off themselves.
 
-What does SMAP mean for PaX? The situation is similar to last year's SMEP that made efficient implementation of (partial) KERNEXEC possible on amd64 (i386/KERNEXEC continues to rely on segmentation instead which provides better protection than SMEP can). SMAP's analog feature in PaX is called UDEREF which so far couldn't be efficiently implemented on amd64 (once again, i386/UDEREF will continue to rely on segmentation to provide better userland/kernel separation than SMAP can). Beyond allowing an efficient implementation of UDEREF there'll be other uses for SMAP (or perhaps a future variant of it) in PaX: sealed kernel memory whose access is carefully controlled even for kernel code itself.
+What does SMAP mean for PaX? The situation is similar to last year's SMEP that
+made efficient implementation of (partial) KERNEXEC possible on amd64
+(i386/KERNEXEC continues to rely on segmentation instead which provides better
+protection than SMEP can). SMAP's analog feature in PaX is called UDEREF
+which so far couldn't be efficiently implemented on amd64 (once again,
+i386/UDEREF will continue to rely on segmentation to provide better
+userland/kernel separation than SMAP can). Beyond allowing an efficient
+implementation of UDEREF there'll be other uses for SMAP (or perhaps a future
+variant of it) in PaX: sealed kernel memory whose access is carefully controlled
+even for kernel code itself.
 
-What does SMAP mean for security? Similarly to UDEREF, an SMAP enabled kernel will be prevented from accessing userland memory in unintended ways, e.g., attacker controlled pointers can no longer target userland memory directly, but even simple kernel bugs such as NULL pointer based dereferences will just trigger a CPU exception instead of letting the attacker take over kernel data flow. Coupled with SMEP this means that future exploits against memory corruption bugs will have to entirely rely on targeting kernel memory (which has been the case under UDEREF/KERNEXEC for many years now). This of course means that for reliable exploitation detailed knowledge of runtime kernel memory will become a premium, therefore abusing bugs that leak kernel memory to userland will become the first step towards exploiting memory corruption bugs. While UDEREF and SMAP prevent gratuitous memory leaks, they still have to allow intended userland accesses and that is exactly the escape hatch that several exploits have already targeted and we can expect more in the future. Fortunately we are once again at the forefront of this game with several features that prevent or at least greatly reduce the amount of informaton that can be so leaked from the kernel to userland (HIDESYM, SANITIZE, SIZE_OVERFLOW, STACKLEAK, USERCOPY).
+What does SMAP mean for security? Similarly to UDEREF, an SMAP enabled kernel
+will be prevented from accessing userland memory in unintended ways, e.g.,
+attacker controlled pointers can no longer target userland memory directly, but
+even simple kernel bugs such as NULL pointer based dereferences will just
+trigger a CPU exception instead of letting the attacker take over kernel data
+flow. Coupled with SMEP this means that future exploits against memory
+corruption bugs will have to entirely rely on targeting kernel memory (which has
+been the case under UDEREF/KERNEXEC for many years now). This of course means
+that for reliable exploitation detailed knowledge of runtime kernel memory will
+become a premium, therefore abusing bugs that leak kernel memory to userland
+will become the first step towards exploiting memory corruption bugs.
+While UDEREF and SMAP prevent gratuitous memory leaks, they still have to allow
+intended userland accesses and that is exactly the escape hatch that several
+exploits have already targeted and we can expect more in the future. Fortunately
+we are once again at the forefront of this game with several features that
+prevent or at least greatly reduce the amount of informaton that can be so
+leaked from the kernel to userland (HIDESYM, SANITIZE, SIZE_OVERFLOW, STACKLEAK,
+USERCOPY).
 
-TL;DR: Intel implements UDEREF equivalent 6 years after PaX, PaX will make use of it on amd64 for improved performance.
+TL;DR: Intel implements UDEREF equivalent 6 years after PaX, PaX will make use
+of it on amd64 for improved performance.
 
