@@ -1,0 +1,48 @@
+1. Design
+
+   The goal of RANDUSTACK is to introduce randomness into the userland stack
+   addresses of a task.
+
+   Every task has a userland stack that is created during execve() (and copied
+   in fork() into the child). This stack is mandatory because this is the way
+   the kernel can pass the arguments and the environment to the new task. The
+   kernel normally creates the stack at the end of the userland address space
+   so that it can grow downwards later. If the application is multithreaded,
+   thread stacks are created by userland using the mmap() interface and hence
+   they are subject to RANDMMAP not RANDUSTACK (or rather, they would be were
+   it not for a 'feature' in linuxthreads that effectively prevents thread
+   stack randomization for now). Linuxthreads has another 'feature' that
+   prevents one from arbitrarily moving the task's stack as it assumes that
+   this stack will always have the highest address in the address space and
+   thread stacks will go below that.
+
+
+2. Implementation
+
+   RANDUSTACK randomizes every task's userland stack on task creation. Since
+   the userland stack is created in two steps (from PaX's point of view),
+   randomization is applied in two steps as well.
+
+   In the first step the kernel allocates and populates pages for the stack
+   then in the second step it maps the pages into the task's address space.
+
+   The first step begins in fs/exec.c in the do_execve() function. The kernel
+   uses a temporary stack pointer stored in bprm.p to track the data copied
+   on the would-be stack pages, this is where PaX applies the first part of
+   the randomization: on i386 bits 2-11 are randomized resulting in a maximum
+   of 4 kB shift. Since at this point no information is available about the
+   new task, we cannot apply this randomization selectively.
+
+   The second step occurs when setup_arg_pages() gets called: this is where
+   the kernel maps the previously populated physical stack pages into the new
+   task's address space. Normally the bottom of the stack goes at STACK_TOP,
+   PaX modifies this constant in include/asm-i386/a.out.h to include a random
+   shift (delta_stack) in bits 12-27. This results in an additional maximum
+   shift of 256 MB. At this point we know enough already to be able to apply
+   this randomization selectively.
+
+   The end result of the randomization is that data which was copied on the
+   stack before setup_arg_pages() has bits 2-27 randomized (26 bits), the rest
+   has bits 4-27 randomized (24 bits) because the create_elf_tables() function
+   in fs/binfmt_elf.c aligns the stack pointer on a 16 byte boundary, that is,
+   it discards the randomization in bits 2-3.

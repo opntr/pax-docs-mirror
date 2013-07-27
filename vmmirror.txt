@@ -1,0 +1,364 @@
+1. Design
+
+   The goal of vma mirroring is to allow for creating special file mappings
+   where a given set of physical pages (those backing the file) is visible
+   at two different linear addresses in a given task. Furthermore the mirroring
+   logic ensures that the two mappings in linear address space will see the
+   same physical pages even after they go through a swap-out/swap-in cycle
+   or copy-on-write.
+
+   While vma mirroring is a generic idea, PaX uses it for very specific
+   purposes and therefore the implementation is a bit less generic than it
+   could be (but it results in simpler and less intrusive changes).
+
+   The first use is for mirroring executable regions into the code segment
+   under SEGMEXEC. In this case the 3 GB userland linear address space is
+   divided into two halves of 1.5 GB each and the code/data segment descriptors
+   are modified to cover only one or the other. To be able to execute code
+   under this setup we have to ensure that executable mappings are visible
+   in the code segment region (1.5-3 GB range in linear address space). Since
+   such executable mappings may contain data as well (constant strings,
+   function pointer tables, etc), we have to have a mirror of these mappings
+   at the same logical addresses in the data segment as well (0-1.5 GB range
+   in linear address space). The nice property of this setup is that a pair
+   of mirrored regions will have a constant difference between their start/end
+   addresses: 1.5 GB (or SEGMEXEC_TASK_SIZE as it is often referenced in the
+   code).
+
+   The second use of vma mirroring is to implement the mirror of the main
+   executable at a randomized address under RANDEXEC. Here again we will have
+   a constant (task specific) difference between the mirrored regions and can
+   simplify the implementation the same way as under SEGMEXEC.
+
+   There is also an implicit third situation, when both SEGMEXEC and RANDEXEC
+   are active for a task. At a first look this may appear very complex since
+   the executable region of the main executable would have to be mirrored
+   at three places instead of one: randomized mappings in both the data and
+   the code segment (at the same logical addresses) plus a mirror into the
+   code segment at the original logical address. Luckily, we can save on two
+   of them: the randomized mapping in the data segment is not needed as we do
+   not expect code to reference data in its executable segment in a position
+   independent manner (which is what would be needed for code to learn its own
+   location), second we do not need the original mapping mirrored in the code
+   segment as we explicitly do not want it to be executable (so that code
+   references to this region would raise a page fault and the RANDEXEC logic
+   could then react on it).
+
+
+2. Implementation
+
+   vma mirroring requires two basic changes to the VM in Linux. First we have
+   to provide an interface for setting up the mirrors, second we have to
+   maintain the synchronicity between the mirrored regions' linear/physical
+   mappings.
+
+   Linux maintains a per task database of what is present in the given task's
+   address space. This database is a set of structures called vm_area_struct
+   each of which describes a single mapping (defined in include/linux/mm.h).
+
+   The database for a task can be viewed in /proc/<pid>/maps. For our purposes
+   the relevance of the vma database is that it directly guides the page fault
+   resolution logic which in turn is responsible for setting up the linear to
+   physical address translation on a per page basis.
+
+   To understand how all this works, consider task creation and its first
+   moment of life in userland. For ELF executables the load_elf_binary()
+   function in fs/binfmt_elf.c is responsible for populating the task's
+   address space with a few basic mappings such as the stack, the dynamic
+   linker (if the application in question is dynamically linked) and the main
+   executable itself. The file mappings are established by using the kernel's
+   internal do_mmap() interface through a simple wrapper called elf_map().
+
+   Note that at this point only the stack region has physical pages assigned
+   (since that is where arguments, the environment, etc go and therefore must
+   be present in physical memory at this early stage), the file mappings are
+   not yet backed by physical memory pages.
+
+   When the task begins its life in userland, the very first instruction fetch
+   in ld.so or the main executable will raise a page fault since the Linux VM
+   system does not establish a valid physical mapping until it is actually
+   needed (i.e., it is demand based). The first thing the architecture specific
+   page fault handler (for i386 it is do_page_fault() in arch/i386/mm/fault.c)
+   does is to find the vma structure that describes the region in which the
+   page fault happened then call the architecture independent handler
+   (handle_mm_fault() in mm/memory.c) which based on the fault and the vma
+   type will call the appropriate function to establish a physical page
+   containing the expected data (in our case it would be read from the file
+   backing the mapping, that is, somewhere from the .text section in an ELF
+   file).
+
+   The interface for setting up a vma mirror is a simple extension to the
+   already existing memory mapping interface. This interface is accessible
+   from userland as the mmap() library call. Since the vma mirroring facility
+   is meant to be used by specific PaX features only, userland initiated vma
+   mirroring requests are not allowed (that is why PaX returns an error from
+   do_mmap2() in arch/i386/kernel/sys_i386.c). Care must be taken however for
+   handling mmap() requests from tasks running under SEGMEXEC. This is because
+   they can create executable file mappings and therefore they must be mirrored
+   just like when the kernel itself establishes the initial file mappings as
+   discussed above. Since all mmap() requests go through do_mmap() (an inline
+   function defined in include/linux/mm.h) this is where PaX requests the extra
+   mirrored mappings for SEGMEXEC executables. Since do_mmap2() originally
+   gets around do_mmap() by directly calling do_mmap_pgoff(), we modified it
+   to use do_mmap() instead. This way we can ensure that the SEGMEXEC logic
+   gets to see both userland and kernel originated file mapping requests.
+
+   vma mirror requests use special arguments for calling do_mmap_pgoff() in
+   the end:
+      'file'  must be NULL because the mirror will reference the same file
+              as the vma to be mirrored
+      'addr'  has its normal meaning of specifying a hint for searching a
+              suitable hole in the address space where the mapping can go,
+      'len'   must be 0 because it will be derived from the vma that is about
+              to get mirrored,
+      'prot'  has its normal meaning,
+      'flags' has its normal meaning except that it must also specify the new
+              MAP_MIRROR flag and it must request a private mapping,
+      'pgoff' specifies the linear start address of the vma to be mirrored
+              (note that here it is measured in bytes and not PAGE_SIZE units).
+
+  The vma to be mirrored must exist at the specified start address ('pgoff')
+  and must not be mirrored or be a mirror itself already. Furthermore PaX will
+  not allow a writable mirror for a read-only vma. Note that these are only
+  sanity checks to detect early if there is a bug in the rest of the vma
+  mirroring logic (denied mirror requests will end up in a non-functioning
+  task and are therefore easy to see for an end user).
+
+  The second basic change needed for implementing vma mirroring is in the MMU
+  state management logic (which governs the linear/physical translation). Our
+  goal is simple: whenever the state of a mirrored page changes we will have
+  to propagate the change into the state of the mirror page as well (and do all
+  this atomically, that is, other state changing code must be locked out until
+  we finished). Such state changes occur in the following operations: page
+  fault servicing, munmap, mremap, mprotect, mlock and vma merging.
+
+  Servicing a fault means that the kernel finds out why a page fault occured
+  and when it is valid (it occured in a region described by a vma having proper
+  access rights) it will allocate storage in physical memory and set up a valid
+  linear/physical translation in the MMU (on i386 it means setting up a present
+  pte).
+
+  While the page fault classification (valid/invalid) is done in architecture
+  specific code, the actual service needs no longer to care about such details
+  and is architecture independent: handle_mm_fault(), therefore this is what
+  we have to modify. Also note that handle_mm_fault() is used by other code as
+  well that we would otherwise have to explicitly modify (get_user_page() for
+  example that is used by ptrace() among others).
+
+  The strategy for servicing a page fault in a mirrored vma is the following:
+  first we do some sanity checks on the mirror's vma (again in order to detect
+  potential bugs in the implementation early) then allocate the necessary MMU
+  resources (various levels of paging structures) so that by the time we get
+  to propagate the MMU state information, we will not have to worry about
+  resource allocation failures. After successful resource allocation we let
+  the original fault handling logic carry out its work (swap-in a page, do
+  copy-on-write, etc) and intervene when it has just established the new MMU
+  state for the mirror: we call the core of the vma mirroring logic in
+  pax_mirror_fault() in mm/memory.c.
+
+  To simplify the logic of the mirroring code, we established a simple naming
+  convention for variables related to one or the other vma: the vma for which
+  handle_mm_fault() was called is said to be mirrored and the corresponding
+  variables have no suffixes, whereas the other vma is called the mirror and
+  its variables are suffixed by _m. For example, vma_m is the vm_area_struct
+  pointer of the mirror vma.
+
+  pax_mirror_fault() first determines if it has anything to do in the first
+  place and if so, it looks up the mirror vma and associated information, such
+  as the mirror of the fault address and the related MMU structures (we are
+  interested in the page table entry as it contains the physical page number
+  that will have to be synchronized between the mirrors). Once the mirror's
+  pte is known, we have to see if it currently specifies a valid mapping and
+  if so, we have to invalidate it (and while handling the different cases, we
+  also take care of the resident set size: we have to increment it if the
+  mapping was not valid since it will be after mirroring). Invalidating the
+  current mapping in the mirror is derived from kernel code doing the same:
+  the munmap() and swap-out operations. The next and final step is to actually
+  propagate the new linear/physical mapping into the mirror: we look up the
+  physical page in the mirrored pte (and increment its use count since we are
+  going to create another reference to it in the mirror's pte) then construct
+  the mirror's pte from it and the appropriate access rights (the writability
+  state must be copied verbatim from the mirrored pte otherwise we would ruin
+  the copy-on-write logic).
+
+  The atomicity of all the above actions is ensured by holding the appropriate
+  page_table_lock on entry and never releasing it inside. This way the higher
+  level callers (who establish the mirrored pte) ensure that the mirror's pte
+  is established at the same time.
+
+  The last set of vma mirroring related changes ensures that userland can
+  modify/destroy mirrored regions only along with the corresponding mirrors
+  (creation was described in the do_mmap() changes).
+
+  The most complex change is in the munmap() logic which is responsible for
+  destroying all kinds of mappings. To understand the changes let's first look
+  at how it works in the standard kernel. The core function is do_munmap() in
+  mm/memory.c which begins by doing some checks on the area to be removed then
+  proceeds with moving all the vma structures that fall in there (fully or in
+  part) from the mm's vma list to a special one. In the next phase this list is
+  processed for clearing all linear/physical mappings in the MMU for each vma.
+  The final step is to free up page tables that may have become empty and are
+  no longer needed.
+
+  Mirror handling requires two changes in the above logic. First, we have to
+  detect if any to be removed vma is mirrored and if so we have to move its
+  mirror vma to another special list (during the same atomic operation as it
+  is done originally). Second, we have to clear the corresponding mappings in
+  the MMU for this list of vma structures as well.
+
+  While setting up the second special list is straightforward, the second step
+  is not as the original kernel code is rather badly organized and does not
+  lend itself for easy reuse. In order to avoid unnecessary code replication we
+  opted for rearranging the original code a bit through simple program
+  transformations: the MMU cleanup logic has been split into unmap_vma_list()
+  and unmap_vma(). This way processing the second special list can be done in
+  unmap_vma_mirror_list() which makes use of unmap_vma().
+
+  There is one last trick worth noting: map_count handling. This counter has to
+  be decremented for each vma which gets unmapped. The original do_munmap()
+  logic delegates this task to unmap_vma(). The problem with it is that at this
+  point all the vma structures have already been removed from the main mm vma
+  list however this counter is decremented one by one for each vma. This in
+  turn will trigger a kernel BUG message because of the inconsistency between
+  map_count and the actual number of vma structures on the mm vma list. Since
+  this is a kernel BUG (or 'feature', after all at the end of do_munmap()
+  everything will be in synch again), we decided to modify the original kernel
+  logic so that map_count gets decremented during the special lists preparation
+  phase.
+
+  The next change is in do_mremap() in mm/mremap.c where we ensure that
+  mirrored regions simply cannot be remapped (they can shrink however as it
+  simply means a call to do_munmap() which handles mirrors fine).
+
+  The remaining two userland interfaces are handled the same way because both
+  mprotect() and mlock() have the same internal logic: enumerate all mappings
+  in the given range and then act on each one of them individually. The
+  functions we modify are mprotect_fixup() and mlock_fixup(), respectively.
+  First the original functions are moved to __mprotect_fixup() and
+  __mlock_fixup() then they are called for each vma in a mirror when one is
+  encountered.
+
+  The vma merging mechanism is governed by the inline can_vma_merge() function
+  in include/linux/mm.h. PaX modifies this function to prevent anonymous mirror
+  mappings from getting inadvertantly merged with others (file mappings are
+  never merged).
+
+
+3. Examples
+
+   To help better understand vma mirroring, we present a few address space
+   layouts and explain what happened there. In each case we used a copy of
+   /bin/cat in /tmp to execute "/tmp/cat /proc/self/maps". Note that for
+   the sake of simplicity we disabled RANDMMAP, this of course should not
+   be done in production systems. The [x] marks are not part of the original
+   output, we use them to refer to the various lines in the explanation.
+
+
+   Active PaX features: SEGMEXEC and MPROTECT
+
+    [1] 08048000-0804a000 R-Xp 00000000 00:0b 1109       /tmp/cat
+    [2] 0804a000-0804b000 RW-p 00002000 00:0b 1109       /tmp/cat
+    [3] 0804b000-0804d000 RW-p 00000000 00:00 0
+    [4] 20000000-20015000 R-Xp 00000000 03:07 110818     /lib/ld-2.2.5.so
+    [5] 20015000-20016000 RW-p 00014000 03:07 110818     /lib/ld-2.2.5.so
+    [6] 2001e000-20143000 R-Xp 00000000 03:07 106687     /lib/libc-2.2.5.so
+    [7] 20143000-20149000 RW-p 00125000 03:07 106687     /lib/libc-2.2.5.so
+    [8] 20149000-2014d000 RW-p 00000000 00:00 0
+    [9] 5fffe000-60000000 RW-p fffff000 00:00 0
+   [10] 68048000-6804a000 R-Xp 00000000 00:0b 1109       /tmp/cat
+   [11] 80000000-80015000 R-Xp 00000000 03:07 110818     /lib/ld-2.2.5.so
+   [12] 8001e000-80143000 R-Xp 00000000 03:07 106687     /lib/libc-2.2.5.so
+
+   Since cat is a dynamically linked executable, its address space will have
+   several file mappings besides the main executable. Let's see what each line
+   represents.
+
+   [1] is the first PT_LOAD segment of the /tmp/cat ELF file, it is mapped
+       with R-X rights, that is, it contains the executable code plus all
+       read-only initialized data as well. It is also mirrored by [10] because
+       it is executable.
+
+   [2] is the second PT_LOAD segment of the /tmp/cat ELF file, it is mapped
+       with RW- rights, that is, it contains writable data (all initialized and
+       the beginning of the uninitialized data, in our case all of it as they
+       fit into a single page).
+
+   [3] is the brk() managed heap (its size changes at runtime as cat calls
+       malloc()/free()/etc). Note that if cat had more uninitialized data than
+       what would fit into the gap left on the last page of mapping [2] then
+       the rest would be mapped here from the beginning of [3] and the brk()
+       managed heap would follow then.
+
+   [4] and [5] are the PT_LOAD segments of the dynamic linker, whereas
+   [6] and [7] are those of the C library. [4] and [6] are also mirrored by
+       [11] and [12] respectively as they are executable.
+   [8] is an anonymous mapping corresponding to uninitialized data in the C
+       library (if we take a look at the ELF program headers of libc, we will
+       see that the memory size of the second PT_LOAD segment is 4 pages more
+       than its file size).
+
+   [9] is another anonymous mapping containing the stack. We can observe that
+       it is at the end of the userland address space (which under SEGMEXEC
+       is at TASK_SIZE/2) and grows downwards.
+
+   [10], [11] and [12] are the mirrors of the executable file mappings [1],
+   [4] and [6] respectively (notice that each pair has exactly TASK_SIZE/2
+       "distance"). They are all above the TASK_SIZE/2 limit as well which
+       means that they are part of the code segment and hence executable.
+
+
+   Active PaX features: SEGMEXEC and RANDEXEC and MPROTECT
+
+    [1] 08048000-0804a000 R-Xp 00000000 00:0b 1109       /tmp/cat
+    [2] 0804a000-0804b000 RW-p 00002000 00:0b 1109       /tmp/cat
+        0804b000-0804d000 RW-p 00000000 00:00 0
+    [3] 20000000-20002000 ++-p 00000000 00:00 0
+    [4] 20002000-20003000 RW-p 00002000 00:0b 1109       /tmp/cat
+        20003000-20018000 R-Xp 00000000 03:07 110818     /lib/ld-2.2.5.so
+        20018000-20019000 RW-p 00014000 03:07 110818     /lib/ld-2.2.5.so
+        20021000-20146000 R-Xp 00000000 03:07 106687     /lib/libc-2.2.5.so
+        20146000-2014c000 RW-p 00125000 03:07 106687     /lib/libc-2.2.5.so
+        2014c000-20150000 RW-p 00000000 00:00 0
+    [5] 5fffe000-60000000 RW-p 00000000 00:00 0
+    [6] 80000000-80002000 R-Xp 00000000 00:0b 1109       /tmp/cat
+        80003000-80018000 R-Xp 00000000 03:07 110818     /lib/ld-2.2.5.so
+        80021000-80146000 R-Xp 00000000 03:07 106687     /lib/libc-2.2.5.so
+
+   Enabling RANDEXEC changes the layout slightly. In particular, beyond the
+   previously shown mappings we can see [3] which represents the dummy
+   anonymous mapping corresponding to the first (executable) PT_LOAD segment
+   of cat and [4] which is the mirror of the second PT_LOAD segment of cat
+   (notice that [2] and [4] have the same page offset values). Also observe
+   that [1] is mirrored above the TASK_SIZE/2 limit by [6] at a different
+   distance than TASK_SIZE/2, hence despite its having the R-X rights, it is
+   not actually executable: logical addresses of [1] are invalid in the code
+   segment, instead it is region [3] whose logical addresses are valid there
+   (in region [6]).
+
+   The careful reader has probably noticed a small difference between this
+   and the previous situation: the stack area in the first case is 3 pages
+   long whereas [5] here has only 2 pages. The reason for this discrepancy
+   has to do with RANDUSTACK: the first part of the stack randomization
+   cannot be disabled and in our case it happened to cause a big enough shift
+   that made the kernel allocate an extra page for the initial stack.
+
+
+   Active PaX features: PAGEEXEC and RANDEXEC and MPROTECT
+
+    [1] 08048000-0804a000 R--p 00000000 00:0b 1109       /tmp/cat
+    [2] 0804a000-0804b000 RW-p 00002000 00:0b 1109       /tmp/cat
+        0804b000-0804d000 RW-p 00000000 00:00 0
+    [3] 40000000-40002000 R-Xp 00000000 00:0b 1109       /tmp/cat
+    [4] 40002000-40003000 RW-p 00002000 00:0b 1109       /tmp/cat
+        40003000-40018000 R-Xp 00000000 03:07 110818     /lib/ld-2.2.5.so
+        40018000-40019000 RW-p 00014000 03:07 110818     /lib/ld-2.2.5.so
+        40021000-40146000 R-Xp 00000000 03:07 106687     /lib/libc-2.2.5.so
+        40146000-4014c000 RW-p 00125000 03:07 106687     /lib/libc-2.2.5.so
+        4014c000-40150000 RW-p 00000000 00:00 0
+        bfffe000-c0000000 RW-p fffff000 00:00 0
+
+   The last case where vma mirroring takes place has the simplest layout of
+   all as only the main executable is mirrored: [3] mirrors [1] and [4]
+   mirrors [2]. Notice that [1] no longer has R-X rights but R-- as under
+   PAGEEXEC it is the mapping rights that decide what is executable, not the
+   mapping's position.

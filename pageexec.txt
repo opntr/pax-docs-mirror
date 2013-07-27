@@ -1,0 +1,145 @@
+1. Design
+
+   The goal of PAGEEXEC is to implement the non-executable page feature using
+   the paging logic of IA-32 based CPUs.
+
+   Traditionally page protection is implemented by using the features of the
+   CPU Memory Management Unit. Unfortunately IA-32 lacks the hardware support
+   for execution protection, i.e., it is not possible to directly mark a page
+   as executable/non-executable in the paging related structures (the page
+   directory (pde) and table entries (pte)). What still makes it possible to
+   implement non-executable pages is the fact that from the Pentium series on
+   the Intel CPUs have a split Translation Lookaside Buffer for code and data
+   (AMD CPUs have a split TLB since the K5 series however due to its
+   organization it is usable for our purposes only since the K7 core based
+   CPUs).
+
+   The role of the TLB is to act as a cache for virtual/physical address
+   translations that the CPU has to perform for every single memory access (be
+   that instruction fetch or data read/write). Without the TLB the CPU would
+   have to perform an expensive page table walk operation for every such
+   memory access and obviously that would be detrimental to performance.
+
+   The TLB operates in a simple manner: whenever the CPU wants to access a
+   given virtual address, it will first check whether the TLB has a cached
+   translation or not. On a TLB hit it will take the physical address directly
+   from the TLB, otherwise it will perform a page table walk to look up the
+   required translation and cache the result in the TLB as well (if the page
+   table walk is unable to find the translation or the result is in conflict
+   with the access type, e.g., a write to a read-only page, then the CPU will
+   instead raise a page fault exception). Note that hardware assisted page
+   table walking and automatic TLB loading are features specific to IA-32,
+   other CPUs may have or need software assistance in this operation. Since
+   the TLB has a finite size, sooner or later it becomes full and the CPU will
+   have to purge entries to make room for new translations (on IA-32 this is
+   again automatically done in hardware). Software can also purge TLB entries
+   by either removing all translations (e.g., whenever a userland context
+   switch happens) or those corresponding to a specific virtual address.
+
+   As mentioned already, from the Pentium on Intel CPUs have a split TLB, that
+   is, virtual/physical translations are cached in two independent TLBs
+   depending on the access type: instruction fetch related memory accesses will
+   load the ITLB, everything else loads the DTLB (if both kinds of accesses are
+   made to a page then both TLBs will have an entry). TLB entry replacement
+   works also on a per TLB basis except for the software initiated purges which
+   act on both.
+
+   The above described TLB behaviour means that software has explicit control
+   over ITLB/DTLB loading: it can get notified on hardware TLB load attempts
+   if it sets up the page tables so that such attempts will fail and trigger
+   a page fault exception, and it can also initiate a TLB load by making the
+   appropriate memory access to have the CPU walk the page tables and load one
+   of the TLBs. This in turn is the key to implement non-executable pages:
+   such pages can be marked either as non-present or requiring supervisor level
+   access in the page tables hence userland memory accesses would raise a page
+   fault. The page fault handler can then decide whether it was an instruction
+   fetch attempt (by comparing the fault address to that of the instruction
+   that raised the fault) or a legitimate data access. In the former case we
+   will have detected an execution attempt in a non-executable page and can
+   act accordingly (terminate the task), in the latter case we can just change
+   the affected page table entry temporarily to allow user level access and
+   have the CPU load it into the DTLB (we will of course have to restore the
+   page table entry to the old state so that further page table walks will
+   again raise a page fault).
+
+   The decision between using non-present or supervisor mode page table entries
+   for marking a page as non-executable comes down to performance in the end,
+   the latter being less intrusive because kernel initiated data accesses to
+   userland pages will not raise a page fault.
+
+   To sum it up, PAGEEXEC as implemented in PaX overloads the meaning of the
+   User/Supervisor bit in the ptes to mean the executable/non-executable status
+   and also makes sure that data accesses to non-executable pages still work as
+   before.
+
+
+2. Implementation
+
+   PAGEEXEC requires two sets of changes in Linux: the kernel has to be taught
+   that the i386 architecture can do the proper non-executable semantics, and
+   next we have to deal with the special page faults that require kernel
+   assisted DTLB loading.
+
+   The low-level definitions of the capabilities of the paging logic are in
+   include/asm-i386/pgtable.h. Here we simply redefine the constants that are
+   used for creating the ptes of non-executable pages. One such use of these
+   constants is the protection_map[] array defined in mm/mmap.c which is
+   referenced whenever the kernel sets up a pte for a userland mapping. Since
+   PAGEEXEC can be disabled on a per task basis we have to modify all code
+   that accesses this array so that we provide an executable pte even if it
+   was not explicitly requested. Affected files include fs/exec.c (where the
+   stack pages are set up), mm/mprotect.c, mm/filemap.c and mm/mmap.c. The
+   changes in the latter two cooperate in a non-trivial way: do_mmap_pgoff()
+   creates executable non-anonymous mappings by default and it is the job of
+   generic_file_mmap() to turn it into a non-executable one (as the mapping
+   turned out to be a file mapping). This logic ensures that non-anonymous
+   mappings of devices remain executable regardless of PAGEEXEC. We opted for
+   this approach to remain as compatible as possible (by not affecting all
+   non-anonymous mappings) yet still make use of the non-executable feature
+   in the most frequently encountered case.
+
+   The kernel assisted DTLB loading logic is in the IA-32 specific page fault
+   handler which in Linux is do_page_fault() in arch/i386/mm/fault.c. For
+   easier code maintenance we created our own page fault entry point called
+   pax_do_page_fault() which gets called first from the low-level page fault
+   exception handler page_fault found in arch/i386/kernel/entry.S.
+
+   First we verify that the given page fault is ours by checking for a userland
+   fault caused by access conflict (vs. not present page). Next we pay special
+   attention to faults caused by an instruction fetch since this means an
+   attempt of code execution in a non-executable page. Such faults are easily
+   identified by checking for a read access where the target address of the
+   page fault is equal to the userland instruction pointer (which is saved by
+   the CPU at the time of the fault for us). The default action is of course a
+   task termination along with a log message, only EMUTRAMP when enabled can
+   change it (see separate document).
+
+   Next we prepare the mask for setting up the special pte for loading the
+   DTLB and then we acquire the spinlock that guards MMU state changes (since
+   we are about to cause such a change ourselves). Holding the spinlock is
+   also necessary for looking up the target pte that we will modify and load
+   into the DTLB. If the pte state we looked up no longer corresponds to the
+   fault type then we must have raced with other MMU state changing code and
+   pass down the fault to the original fault handler. It is also the time when
+   we can identify (and pass down) copy-on-write page faults that have the
+   same fault type but a different pte state than what is caused by the
+   PAGEEXEC logic.
+
+   Finally we change the pte to allow userland accesses to the given page then
+   perform a dummy read memory access that will have the CPU page table walk
+   logic load it into the DTLB and then we change the state back to be in
+   supervisor mode. There is a trick in this part of the code that is worth
+   a few words. If the TLB already has an entry for a given virtual/physical
+   translation then initiating a memory access will not cause a page table
+   walk, that is, for our DTLB loading to work we would have to ensure that
+   the DTLB has no entries for our virtual address. It turns out that different
+   members of the Intel IA-32 family have a different behaviour when the CPU
+   raises a page fault during a page table walk (which is our case): the old
+   Pentium (but not the MMX version) CPUs would still cache the translation
+   if it described a present mapping but had an access conflict (which is our
+   case since we have a supervisor mode pte that is accessed while executing
+   in user mode) whereas newer CPUs (P6 core based ones, P4 and probably future
+   CPUs as well) would not cache them at all. This means that in the second
+   case we can be sure that the DTLB has no translations for our target virtual
+   address and can omit a very expensive 'invlpg' instruction (it sped up the
+   fast path by some 20% on a P3).

@@ -1,0 +1,64 @@
+1. Design
+
+   The goal of SEGMEXEC is to implement the non-executable page feature using
+   the segmentation logic of IA-32 based CPUs.
+
+   On IA-32 Linux runs in protected mode with paging enabled. This means that
+   for every memory access (be that instruction fetch or normal data access)
+   the CPU will perform a two step address translation. In the first step the
+   logical address decoded from the instruction is translated into a linear
+   (or in another terminology, virtual) address. This translation is done by
+   the segmentation logic whose details are explained in a separate document.
+
+   While Linux effectively does not use segmentation by creating 0 based and
+   4 GB limited segments for both code and data accesses (therefore logical
+   addresses are the same as linear addresses), it is possible to set up
+   segments that allow to implement non-executable pages.
+
+   The basic idea is that we divide the 3 GB userland linear address space
+   into two equal halves and use one to store mappings meant for data access
+   (that is, we define a data segment descriptor to cover the 0-1.5 GB linear
+   address range) and the other for storing mappings for execution (that is,
+   we define a code segment descriptor to cover the 1.5-3 GB linear address
+   range). Since an executable mapping can be used for data accesses as well,
+   we will have to ensure that such mappings are visible in both segments
+   and mirror each other. This setup will then separate data accesses from
+   instruction fetches in the sense that they will hit different linear
+   addresses and therefore allow for control/intervention based on the access
+   type. In particular, if a data-only (and therefore non-executable) mapping
+   is present only in the 0-1.5 GB linear address range, then instruction
+   fetches to the same logical addresses will end up in the 1.5-3 GB linear
+   address range and will raise a page fault hence allow detecting such
+   execution attempts.
+
+
+2. Implementation
+
+   The core of SEGMEXEC is vma mirroring which is discussed in a separate
+   document. The mirrors for executable file mappings are set up in do_mmap()
+   (an inline function defined in include/linux/mm.h) except for a special
+   case with RANDEXEC (see separate document). do_mmap() is the one common
+   function called by both userland and kernel originated mapping requests.
+
+   The special code and data segment descriptors are placed into a new GDT
+   called gdt_table2 in arch/i386/kernel/head.S. The separate GDT is needed
+   for two reasons: first it simplifies the implementation in that the CS/SS
+   selectors used for userland do not have to change, and second, this setup
+   prevents a simple attack that a single GDT setup would be subject to (the
+   retf and other instructions could be abused to break out of the restricted
+   code segment used for SEGMEXEC tasks). Since the GDT stores the userland
+   code/data descriptors which are different for SEGMEXEC tasks, we have
+   to modify the low-level context switching code called __switch_to() in
+   arch/i386/kernel/process.c and the last steps of load_elf_binary() in
+   fs/binfmt_elf.c (where the task is first prepared to execute in userland).
+
+   The GDT also has APM specific descriptors which are set up at runtime and
+   must be propagated to the second GDT as well (in arch/i386/kernel/apm.c).
+   Finally the GDT stores also the per CPU TSS and LDT descriptors whose
+   content must be synchronized between the two GDTs (in set_tss_desc() and
+   set_ldt_desc() in arch/i386/kernel/traps.c).
+
+   Since the kernel allows userland to define its own code segment descriptors
+   in the LDT, we have to disallow it since it could be used to break out of
+   the SEGMEXEC specific restricted code segment (the extra checks are in
+   write_ldt() in arch/i386/kernel/ldt.c).

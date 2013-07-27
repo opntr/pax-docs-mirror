@@ -1,0 +1,423 @@
+1. Generic Notes & Some Design
+
+   To understand the future direction of PaX, let's summarize what we achieve
+   currently. The goal is to prevent/detect exploiting of software bugs that
+   allow arbitrary read/write access to the attacked process. Exploiting such
+   bugs gives the attacker three different levels of access into the life of
+   the attacked process:
+
+   (1) introduce/execute arbitrary code
+   (2) execute existing code out of original program order
+   (3) execute existing code in original program order with arbitrary data
+
+   Non-executable pages (NOEXEC) and mmap/mprotect restrictions (MPROTECT)
+   prevent (1) with one exception: if the attacker is able to create/write
+   to a file on the target system then mmap() it into the attacked process
+   then he will have effectively introduced and executed arbitrary code.
+
+   Address space layout randomization (ASLR) prevents all of (1), (2) and (3)
+   in a probabilistic sense for bugs where the attacker needs advance knowledge
+   of addresses in the attacked process *and* he cannot learn about them (i.e.,
+   there is no information leaking bug in the target).
+
+   It is also worth noting that since all of PaX is implemented in the kernel,
+   the kernel is considered as the Trusted Computing Base which can be subject
+   to the same kind of attacks as userland.
+
+   Based on the above the future efforts will aim at the following:
+
+   (a) try to handle the exception to (1)
+   (b) implement all possible features for protecting the kernel itself against
+       exploiting kernel bugs, optionally (long term) create a non-kernel mode
+       TCB
+   (c) implement deterministic protection for (2) and maybe (3)
+   (d) implement probabilistic protection for (2) potentially resisting
+       information leaking
+
+   We do not plan to deal with (a) in general, it is better left for Access
+   Control and/or Trusted Path Execution systems which are beyond our project
+   (e.g., grsecurity or some LSM modules).
+
+   Note also that detecting/preventing (3) is probably equivalent to the
+   halting problem (since the protection would have to detect data changes and
+   their influences on all possible execution flows), so we do not expect
+   generic solutions such as for (1). Even detecting/preventing (2) looks
+   suspicious in this regard (given our attack model), but we have yet to see
+   where and to what extent we can make a compromise to achieve the goal.
+
+
+2. More Design & Implementation
+
+   In the following we will give some details on (a), (b), (c) and (d) although
+   it should be noted that all this is just plans, we do not know yet what will
+   prove to be practical in the end. There are three measures that will help
+   answer this question though:
+   - how many/extensive changes are required (complexity),
+   - how much protection is achieved (efficiency),
+   - is it fast enough for practical purposes (performance).
+   In the following we will try to answer these questions as well.
+
+   (a.1) for a certain subset of the exception there can be a simple solution,
+         requiring only some changes in the dynamic linker: if the target
+         application is dynamically linked but does not load libraries
+         explicitly (via the dlopen() interface) then the dynamic linker could
+         be modified to tell the kernel when it is done loading all the shared
+         libraries and afterwards the kernel could prevent all executable file
+         mappings (or at least remove the executable status on them).
+
+         This solution will require userland changes (vs. kernel only) but
+         they will be fairly simple. It will also be efficient (achieves the
+         goal for this set of applications) and fast (basically no measurable
+         performance impact).
+
+   (a.2) actually, the above kernel notification is not strictly needed, the
+         kernel itself could determine if previous file mappings reference
+         dlopen() and whether the dynamic linker is done loading libraries.
+
+         This solution will be kernel only however it will be more complex
+         as we will have to parse the ELF headers to determine whether the
+         dlopen() interface is referenced for dynamic linking (in (a.1) the
+         dynamic linker already has the necessary parsing code). It will also
+         be as efficient and fast as (a.1) since it will do the same kind of
+         processing, just inside the kernel.
+
+   (b.1) non-executable kernel pages: using the segmentation logic of IA-32
+         we can reduce the KERNEL_CS segment to cover only the kernel image,
+         furthermore we can make this area read-only then using the paging
+         logic. This step will most likely require the reorganization of the
+         kernel image (by modifying the kernel linker script and maybe even
+         source code). How module support fits into this is yet to be determined.
+
+         This solution will be complex and may not be kernel-only (depends on
+         how the module problem can be solved, in particular if the current
+         modutils support mapping different ET_REL ELF file sections into non-
+         contiguous memory areas). We expect no performance impact from this
+         (much like SEGMEXEC) and to be very efficient (i.e., this will prevent
+         introduction/execution of arbitrary code in kernel land).
+
+   (b.2) read-only kernel function pointers: one way of doing (2) is to modify
+         function pointers and this is what this method would prevent.
+
+         This solution will require kernel-only changes, however they will be
+         quite extensive (although simple) as normally Linux does not use the
+         'const' qualifier for structures that contain such pointers (even if
+         they are really not meant to be modified). Maybe this could also be
+         brought to the attention of the mainline kernel developers since this
+         is more of a program correctness issue than that of security per se.
+
+         We expect no performance impact from this however we note that this
+         is not an efficient solution since there are still methods of
+         achieving (2), in particular there are function pointer like entities
+         on the kernel stack (saved return EIP values from function calls).
+         These can however be addressed as well as we will show it later.
+
+   (b.3) non-kernel based TCB: IA-32 has two execution modes that are normally
+         beyond the scope of normal programs (be that OS kernels or userland):
+         System Management Mode (SMM) and Probe Mode. SMM is normally used to
+         implement power management schemes (APM/ACPI), while Probe Mode is
+         used for low-level (hardware) debugging. Since using Probe Mode would
+         require extra hardware normally not present in consumer systems, we
+         will discuss SMM only as most current systems have the necessary
+         hardware support in place already (the PCI chipset) and the rest
+         requires pure software only.
+
+         SMM has a few features that would allow for implementing a new TCB,
+         beyond the reach and control of traditional OS kernels (i.e., it could
+         not be compromised even by ring-0 protected mode code).
+
+         The first feature is that the PCI chipset (North Bridge or Memory
+         Controller Hub in particular) allows to carve out some amount of RAM
+         for SMM use only (i.e., such memory could be accessed only while the
+         CPU is in SMM). Normally this memory is set up by the BIOS which will
+         store the power management code there (the System Management Interrupt
+         (SMI) handler and related data).
+
+         The second feature is that SMI can be generated by both software and
+         hardware means, i.e., it is possible to create an API between the SMI
+         handler and the rest of the kernel. Also the SMI handler can be
+         invoked periodically, beyond normal kernel control.
+
+         These features would allow for storing various cryptographic
+         primitives inside the SMI handler and have them validate the state of
+         the kernel periodically. They would also provide the kernel with some
+         limited amount of secure data storage (albeit volatile).
+
+         This solution is very complex, very hardware specific however very
+         efficient as well. Depending on the frequency of the SMI, it may or
+         may not have a noticable performance impact.
+
+   (c.0) an attacker can achieve (2) if he is able to change the execution flow
+         of the target to his liking. Since such changes normally occur at very
+         specific instructions (jmp, call, retn), our goal is to protect these.
+
+         All of these methods will necessarily be userland changes, the kernel
+         could not perform them fast enough, if at all. Note also that these
+         methods can be implemented at various levels of abstraction, such as
+         the source code, the compiler, the static and the dynamic linker.
+
+         Complexity is expected to be high in general regardless of what level
+         they are implemented at. We also expect that we will have to make
+         tradeoffs between efficiency and performance, and even in the extreme
+         we do not expect to be very efficient (that is, there will remain
+         attack methods under specific circumstances and we may not even be
+         able to precisely determine them for a given target).
+
+         With this said, let's look at a few ideas now.
+
+   (c.1) To protect execution flow changes via the jmp/call instructions, we
+         would have to be able to identify all explicit function pointers in
+         the target and make them read-only. While we can at least identify
+         them if we have the source code or there are sufficient relocations
+         present in the given ELF file (this is where using ET_DYN ELF files
+         becomes important, even for normal executables), making them read-only
+         is a problem.
+
+         First, such function pointers are normally not qualified as 'const'
+         in the original source code (in whatever language), so in memory
+         they will end up being mixed with other writable data and hence using
+         the paging logic to make such pages read-only would introduce a big
+         performance impact. Second, there are function pointers which need
+         to be writable by the program logic itself. In any case, reducing the
+         number of writable function pointers does decrease the success rate
+         of (2) since there will be less places where the execution flow can be
+         diverted (and the remaining places may not be enough to successfully
+         attack the given target).
+
+         The most important function pointers are the following:
+
+         - GOT entries
+         - .ctors/.dtors
+         - atexit() handlers
+         - malloc() callbacks
+         - linuxthread callbacks (atfork() handlers)
+
+         Of these at least the first two sets can be easily isolated and made
+         read-only, the others are by their nature writable. To protect the
+         GOT entries we will have to make changes to both the static and the
+         dynamic linker. The static linker will have to place the GOT into
+         its own PT_LOAD segment so that later the dynamic linker can use
+         mprotect() to make it read-only. Making the GOT read-only is possible
+         either at application startup or on every GOT entry update. The former
+         requires the enforcement of the LD_BIND_NOW behaviour and it affects
+         startup time (for the worse), whereas the latter affects GOT entry
+         resolution time (it needs two mprotect() calls to make the GOT
+         temporarily writable then read-only again) and is open to races
+         (although probably not easy to exploit since by the time an attack
+         would take place, most needed GOT entries should have been resolved).
+
+         Note that being able to change the writability status of the GOT is
+         not a problem since under PaX abusing it would require function
+         pointer hijacking (to call mprotect() with proper arguments) which
+         is either not possible or if it is, then the attacker is already able
+         to call any function and pass arguments to it, so being able to change
+         the GOT does not give him anything extra.
+
+         The actual implementation does not need to be an ld.so modification,
+         it can be another shared library loaded through /etc/ld.so.preload.
+
+         Protecting .ctors/.dtors is as simple as changing the linker script
+         to put these sections into a read-only segment.
+
+   (c.2) To protect execution flow changes via the retn instruction, we face
+         the same problem as above with writable (by their nature) function
+         pointers. What makes the situation different is that we can determine
+         in advance (at compile/link time) and verify at runtime the valid
+         values for a given saved EIP on the stack. An efficient and simple
+         example is shown below:
+
+           callee
+           epilogue:     mov register,[esp]
+                         cmp [register+1],MAGIC
+                         jnz .1
+                         retn
+                     .1: jmp esp
+
+           caller:
+                         call callee
+                         test eax,MAGIC
+
+         What happens here is that we insert an instruction (that does not
+         otherwise affect the program logic) after the call which encodes in
+         its body a magic number derived from the callee's prototype and then
+         before returning from the callee we verify that we are returning to
+         a proper call place or not (register is anything that can be trashed
+         inside a function). The jmp esp will simply trigger the non-executable
+         page enforcement logic and terminate the task.
+
+         This method is efficient in that it sharply reduces the number of code
+         locations where a retn can be forced to return to, and in particular
+         it cannot return to the normal entry point of functions which makes
+         argument passing and stack balancing non-trivial. Note also that it
+         does not matter if the call itself is a direct or indirect one, i.e.,
+         calls through traditional function pointers are just as well protected
+         as normal function calls (although it may be worth separating the two
+         cases because the magic number for directly called functions can be
+         based on more information, such as the function's name).
+
+         The drawback of this method is that reaction on an attack is delegated
+         to userland. It means that when deploying this method in a system,
+         every component (executables + libraries) must be recompiled at once,
+         it cannot be gradually introduced into the system nor can binaries be
+         moved across systems of different nature nor can it be disabled easily
+         (that is, it would require another full system recompilation). As we
+         will see later, there is a probabilistic approach that remedies some
+         of these problems.
+
+   (c.3) The next method works by assuming a weakened attack model where we
+         still assume arbitrary read/write access but we only aim to prevent
+         attacks that need to divert execution flow more than once (i.e., the
+         multiple return-to-libc style attack).
+
+         In this case we can modify the function prologue/epilogue code so
+         that a necessary 'ingredient' for the multiple style of the attack
+         would no longer be present at all. Let's observe first that on IA-32
+         function parameters are passed on the stack normally (vs. registers)
+         and hence the stack needs to be rebalanced after a function call. In
+         a multiple return-to-libc style attack an attacker has to explicitly
+         rebalance the stack after every diverted function call (under Linux
+         the default calling convention is 'caller rebalances' vs. the 'callee
+         rebalances' convention used in Windows). Rebalancing requires the
+         modification of ESP by a specific amount and then also transferring
+         control to execute the next step of the attack. Such an instruction
+         sequence is normally found in the epilogue code of functions and
+         therefore this is what has to be modified (and for symmetry reasons,
+         the prologue as well). Our idea is to modify ESP inside a function so
+         that it would be way off track while the function executes and have
+         a prologue and epilogue code similar to this:
+
+                     without frame ptr              with frame ptr
+
+           prologue: sub esp,BIG_VALUE+4            push ebp
+                     mov [esp+BIG_VALUE],register   mov ebp,esp
+                     ...                            push register
+                                                    sub esp,BIG_VALUE
+                                                    ...
+
+                     mov [esp+BIG_VALUE+TOP],param  mov [esp+BIG_VALUE+TOP],param
+                     add esp,BIG_VALUE-TOP-4        add esp,BIG_VALUE-TOP-4
+                     call func                      call func         
+                     sub esp,BIG_VALUE-TOP          sub esp,BIG_VALUE-TOP
+                     ...                            ...
+
+           epilogue: mov register,[esp+BIG_VALUE]   mov register,[esp+BIG_VALUE]
+                     add esp,BIG_VALUE+4            mov ebp,[esp+BIG_VALUE+4]
+                     retn                           add esp,BIG_VALUE+8
+                                                    retn
+
+         It is clear that an appropriately chosen BIG_VALUE will prevent the
+         stack rebalancing since during an attack only the epilogue is executed
+         without the corresponding prologue. Note also that ESP has to be
+         restored across function calls so that the callee can perform the same
+         ESP modification. This method is expected to be efficient but also to
+         have a noticable impact on performance, although we cannot tell how
+         much (and whether it will be acceptable for practical purposes). Also
+         it will be complex if for no other reason than signal delivery which
+         wants to use the current stack (ESP) and would result in the kernel
+         killing the task in our case. There are different ways of addressing
+         this problem, such as delaying signal delivery (e.g., during system
+         calls we will have a valid userland ESP so at that time signals can
+         be safely delivered) or setting up a special signal stack (which is
+         an already supported POSIX feature, although doing it in multithreaded
+         applications would not be trivial) or teaching the kernel about the
+         userland ESP shift value and have it take that into account before
+         delivering the signal.
+
+   (c.4) attack method (3) is probably the hardest problem of all. Since here
+         the attacker relies on normal program behaviour (as far as execution
+         flow is concerned), we cannot detect changes there. What is possible
+         is to try to prevent specific ways of modifying arbitrary memory and
+         hence reduce the potential arsenal an attacker can use.
+
+         The following is a list of the most well-known and widespread bugs
+         that give some kind of write (and sometimes read) ability:
+
+         - stack based array overflow
+         - heap based array overflow
+         - user controlled format string
+         - integer overflow
+         - incorrect integer signedness change
+
+         There are already a few known solutions for detecting/preventing
+         exploiting such bugs (compiler modifications), where we can extend
+         such work is to try to do them at the binary level (i.e., without
+         access to the source code). The best candidates for such modifications
+         are ET_DYN ELF files (typically libraries), ET_EXEC ELF executables
+         have the fundamental problem of not having enough relocations (maybe
+         vendors should be educated to produce either ET_DYN executables in
+         the future or at least generate sufficient relocations into ET_EXEC
+         files, GNU ld makes the latter very easy now).
+
+   (d.1) if we weaken our attack model by assuming arbitrary write ability but
+         no reading then we can extend ASLR to introduce randomness into the
+         saved values of EIP and hence deter attacks such as the one described
+         in Phrack #59-9. An efficient and simple (fast) implementation could
+         be the modification of function prologue and epilogue code as shown
+         below:
+
+                     without frame ptr  with frame ptr
+
+           prologue: xor [esp],esp      xor ebp,[esp]
+                     sub esp,xxxx       xor [esp],esp
+                     ...                push ebp
+                                        mov ebp,esp
+                                        sub esp,xxxx
+                                        ...
+
+           epilogue: add esp,xxxx       add esp,xxxx/mov esp,ebp
+                     xor [esp],esp      pop ebp
+                     retn/retn xx       xor [esp],esp
+                                        xor ebp,[esp]
+                                        retn/retn xx
+
+         This trick uses the fact that under ASLR ESP has randomness in its
+         lower 8 bits as well (bits 4-7).
+
+   (d.2) The next method is the probabilistic version of saved EIP checking.
+         Here the kernel will create a random 32 bit value (cookie) on every
+         system call and place it into a variable provided by userland (it can
+         be described in the ELF header for example). Then we modify userland
+         as follows:
+
+           callee
+           epilogue:     mov register,[esp]
+                         mov register,[register+1]
+                         sub register,MAGIC
+                         neg register
+                         sbb register,register
+                         lock or [cookie],register
+                         retn
+
+           caller:
+                         call callee
+                         test eax,MAGIC
+
+         It is clear that during a normal execution flow the value of cookie
+         does not change after a function returns hence it can be checked for
+         whenever the task enters the kernel through a system call. Should the
+         kernel find a discrepancy between the cookie as stored in userland and
+         its own version, it can react like it does for the non-executable page
+         violations. To make information leaking useless the kernel can simply
+         generate a new cookie on each system call (after having verified the
+         previous one of course), this way an attacker cannot learn the current
+         value of the cookie since that itself requires communication and hence
+         a system call which would obsolete the leaked information.
+
+         This method is expected to be as efficient as its deterministic
+         version and it also suffers from one less problem: it can be applied
+         gradually to a system, no need to recompile everything at once, also
+         protected executables can be freely moved between different systems
+         without adverse effects.
+
+         Note that this method is free from races (coming from signal delivery
+         or multiple threads) because cookie is updated in one irreversible
+         atomic or instruction (the kernel should of course prevent generating
+         the 0xffffffff value for the cookie, but since its probability is very
+         low, this is not critical).
+
+
+   Finally, we would like to improve on the existing methods PaX provides.
+   In particular, we should change the way we get randomness for ASLR from
+   the kernel since the current method is too exhaustive and is an overkill
+   since we do not really need such a good quality randomness at all. The
+   other possible improvment is in the fast path of the PAGEEXEC page fault
+   handler which could be sped up a bit by using assembly.

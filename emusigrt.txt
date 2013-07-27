@@ -1,0 +1,40 @@
+1. Design
+
+   The goal of EMUSIGRT is to automatically emulate instruction sequences that
+   the kernel generates for the signal return stubs.
+
+   While EMUTRAMP allows one to enable certain instruction sequence emulations
+   on a per task basis, there are some situations where this is not enough or
+   practical (libc does not use a restorer, many applications are statically
+   linked to such, etc). EMUSIGRT solves this problem by allowing to bypass
+   EMUTRAMP when the conditions are right. These conditions are established
+   to limit the security hole that arises from automatic emulation (it is
+   possible in an attack to simulate the signal stack and cause an arbitrary
+   change in the task's registers).
+
+   What we can verify before proceeding with the emulation is that the signal
+   stack has a valid signal number (which the kernel puts there before it
+   dispatches a signal to userland, so it must be there upon return as well)
+   and that the task has actually established a signal handler for the given
+   signal (otherwise the kernel would not have delivered the signal in the
+   first place and hence the task could not have executed a signal return
+   trampoline, in this case we will require EMUTRAMP for emulation). The last
+   check we can do is the consistency between the type of the signal return
+   trampoline and that of the signal handler (for historical reasons Linux
+   has two of them, one supports real-time signals whereas the legacy one
+   does not).
+
+
+2. Implementation
+
+   Emulation is implemented by pax_handle_fetch_fault() in arch/i386/mm/fault.c
+   where both the kernel signal return stubs and the gcc nested function
+   trampolines are recognized and emulated. EMUSIGRT changes the former only
+   by retrieving the signal number from the userland stack and then verifying
+   that it is a valid signal number for which the task has a signal handler:
+   the signal number must be in the range of [1,_NSIG] and cannot be one for
+   which userland cannot establish a signal handler (and consequently the
+   kernel never delivers to userland). Next we look up the signal handler and
+   verify that it is neither the default nor ignored (if it is, then we will
+   check for EMUTRAMP before proceeding with the emulation) and that it is of
+   the right type (the SA_SIGINFO flag differentiates between the two types).

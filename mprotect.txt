@@ -1,0 +1,131 @@
+1. Design
+
+   The goal of MPROTECT is to help prevent the introduction of new executable
+   code into the task's address space. This is accomplished by restricting the
+   mmap() and mprotect() interfaces.
+
+   The restrictions prevent
+   - creating executable anonymous mappings
+   - creating executable/writable file mappings
+   - making an executable/read-only file mapping writable except for performing
+     relocations on an ET_DYN ELF file (non-PIC shared library)
+   - making a non-executable mapping executable
+
+   To understand the restrictions consider the writability/executability of a
+   mapping as state information. This state is stored in the vma structure in
+   the vm_flags field and determines whether the given area (and consequently
+   each page covered by it) is currently writable/executable and/or can be
+   made writable/executable (by using mprotect() on the area). The flags that
+   describe each attribute are: VM_WRITE, VM_EXEC, VM_MAYWRITE and VM_MAYEXEC.
+
+   These four attributes mean that any mapping (vma) can be in 16 different
+   states (for our discussion at least, we ignore the other attributes here),
+   and our goal can be achieved by restricting what state a vma can be in or
+   change to throughout its lifetime.
+
+   Introducing new executable code into a mapping is impossible in any of the
+   following ('good') states:
+      VM_WRITE
+      VM_MAYWRITE
+      VM_WRITE | VM_MAYWRITE
+      VM_EXEC
+      VM_MAYEXEC
+      VM_EXEC | VM_MAYEXEC
+
+   In every other state it is either possible to directly write new executable
+   code into the mapping or the mapping can be changed by mprotect() so that
+   it becomes writable/executable.
+
+   Note that the default kernel behaviour does already prevent certain states
+   (in particular, a mapping cannot have VM_WRITE and VM_EXEC without also
+   having VM_MAYWRITE and VM_MAYEXEC, respectively) so this leaves us with
+   4 good states:
+      VM_MAYWRITE
+      VM_MAYEXEC
+      VM_WRITE | VM_MAYWRITE
+      VM_EXEC | VM_MAYEXEC
+
+   Let's see now what kind of mappings the kernel creates and what MPROTECT
+   has to change in them:
+
+   - anonymous mappings (stack, brk() and mmap() controlled heap): these
+     are created in the VM_WRITE | VM_EXEC | VM_MAYWRITE | VM_MAYEXEC state
+     which is not a good state. Since these mappings have to be writable, we
+     can only change the executable status (this will still break real life
+     applications, see later what could be done about them), MPROTECT simply
+     changes their state to VM_WRITE | VM_MAYWRITE,
+
+   - shared memory mappings: these are created in the VM_WRITE | VM_MAYWRITE
+     state which is a good state,
+
+   - file mappings: similarly to anonymous mappings, these can be created in
+     all the bad states (list omitted for brevity), in particular the kernel
+     grants VM_MAYWRITE | VM_MAYEXEC to any mapping regardless of what rights
+     were requested. In order to break as few applications as possible yet
+     still achieve our goal, we decided to use the following states for file
+     mappings:
+
+     - VM_WRITE | VM_MAYWRITE or VM_MAYWRITE if PROT_WRITE was requested at
+       mmap() time
+
+     - VM_EXEC | VM_MAYEXEC if PROT_WRITE was not requested.
+
+     Effectively executable mappings are forced to be non-writable and writable
+     mappings are forced to be non-executable (including the impossibility to
+     change this state during their existence). There is one exception to this
+     which is needed in order for the dynamic linker to be able to perform
+     relocations on the executable segment of non-PIC ELF files. If one can
+     ensure that no such libraries exist on his system (libraries should be
+     PIC anyway), then this exception can be removed. Note that the ET_DYN ELF
+     executables suggested for use under RANDMMAP should also be PIC (for this
+     one needs a PIC version of crt1.o however).
+
+   The above restrictions ensure that the only way to introduce executable
+   code into a task's address space is by mapping a file into memory while
+   requesting PROT_EXEC as well. For an attacker it means that he has to be
+   able to create/write to a file on the target system before he can mmap()
+   it into the attacked task's address space. There are various ways of
+   preventing/detecting such venues of attack but they are beyond the scope
+   of the PaX project.
+
+   As mentioned before, the MPROTECT restrictions break existing applications
+   that rely on the bad vma states. Most often this means the non-executable
+   anonymous mappings as they are used for satisfying higher-level memory
+   allocation requests (such as the malloc() family in C) and are assumed to
+   be executable (java, gcc trampolines, etc). One way of allowing such
+   applications to work under MPROTECT would be to extend the mmap() interface
+   and allow setting the VM_MAY* flags to certain states. The following
+   example demonstrates how an application would make use of this change:
+
+      - mmap(..., PROT_READ | PROT_WRITE | PROT_MAYREAD | PROT_MAYEXEC, ...)
+      - generate code into the above area
+      - mprotect(..., PROT_READ | PROT_EXEC)
+
+   Note that PROT_EXEC is neither requested nor allowed in the initial mmap()
+   call therefore application programmers are forced to call mprotect()
+   explicitly and hence cannot accidentally violate the MPROTECT policy.
+
+
+2. Implementation
+
+   The first two restrictions are implemented in do_mmap_pgoff() and do_brk()
+   in mm/mmap.c while the other two are in sys_mprotect() in mm/mprotect.c
+   (non-PIC ELF libraries are handled by pax_handle_maywrite()).
+
+   Since MPROTECT makes sense only when non-executable pages are enforced as
+   well, the restrictions are enabled only when either of PAGEEXEC or SEGMEXEC
+   is enabled for the given task. Furthermore some of the restrictions are
+   already meaningful/necessary for enforcing just the non-executables pages,
+   therefore they are applied even if MPROTECT itself is not enabled (but
+   enabling MPROTECT is necessary to complete the feature).
+
+   The special case of allowing non-PIC ELF relocations is managed by
+   pax_handle_maywrite() in mm/mprotect.c. The logic is quite straightforward,
+   first we verify that the mapping for which PROT_WRITE was requested is a
+   candidate for relocations (it has to be an executable file mapping that has
+   not yet been made writable) then we check that the backing file is an
+   ET_DYN ELF file whose dynamic table has an entry showing the need for text
+   relocations. If it is to be allowed we simply change the mapping state that
+   will have the rest of the do_mprotect() logic allow the request and we also
+   set the VM_MAYNOTWRITE flag that will disallow further PROT_WRITE requests
+   on the mapping.

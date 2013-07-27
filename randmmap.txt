@@ -1,0 +1,46 @@
+1. Design
+
+   The goal of RANDMMAP is to introduce randomness into memory regions handled
+   by the do_mmap() kernel interface. This includes all file and anonymous
+   mappings, such as the main executable, libraries, the brk() and mmap()
+   managed heaps.
+
+   Since the brk() managed heap is tied to the main executable and the latter
+   cannot be randomly remapped without further tricks if it is an ET_EXEC
+   ELF executable (see RANDEXEC for more details), RANDMMAP handles ET_DYN
+   ELF executables only. Luckily creating ET_DYN ELF executables is a very
+   simple process and their randomization is much easier and does not have
+   the drawbacks of RANDEXEC.
+
+
+2. Implementation
+
+   All methods of populating the address space of a task are based on the
+   do_mmap_pgoff() internal kernel function in mm/mmap.c. This function can
+   establish a mapping at a caller specified address (if the MAP_FIXED flag
+   is used) or at an address chosen by the kernel. PaX honours the first type
+   of request and intervenes in the second only.
+
+   The core function that chooses a large enough unpopulated region in the
+   task's address space is arch_get_unmapped_area() in mm/mmap.c. The search
+   algorithm is simple: the function enumerates all memory mappings from a
+   given address up (either a user supplied hint or TASK_UNMAPPED_BASE) and
+   returns the first hole big enough to satisfy the request.
+
+   PaX applies randomization (delta_mmap) to TASK_UNMAPPED_BASE in bits 12-27
+   (16 bits) and ignores the hint for file mappings (unfortunately there is
+   a 'feature' in linuxthreads where the thread stack mappings do not specify
+   MAP_FIXED but still expect that behaviour so the hint cannot be overriden
+   for anonymous mappings). Note that overriding the hint is not a problem as
+   MAP_FIXED requests are directly satisfied in get_unmapped_area() and never
+   end up in arch_get_unmapped_area().
+
+   There is one more place where RANDMMAP introduces randomness: in the
+   load_elf_binary() function in fs/binfmt_elf.c. As mentioned already, there
+   are two ways to randomize the mapping of the main executable: RANDEXEC
+   for ET_EXEC ELF files and RANDMMAP for ET_DYN ELF files. The latter is
+   accomplished here by overriding the standard ELF_ET_DYN_BASE address used
+   for mapping ET_DYN ELF files: PaX chooses the new base at the standard
+   ET_EXEC base address of 0x08048000 and adds the delta_exec random value
+   to it. This way the task address space layout will look similar to the
+   normal ET_EXEC case.

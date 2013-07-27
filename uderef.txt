@@ -1,0 +1,559 @@
+in the following i'll assume that you have good knowledge of i386
+protected mode details and some concepts about how modern OSs make
+use of them and i'll only explain what linux (2.6 in particular)
+does and how UDEREF modifies it to achieve best-effort (read: not
+perfect) userland/kernel separation.  
+
+----------------------------------------------------------------------------
+of the basic protected mode resources (TSS, GDT, LDT, IDT) we'll
+look at the GDT only as that's what defines all the interesting
+descriptors/segments needed for UDEREF (userland has some control
+over the per-process LDT but whatever is there isn't relevant as
+linux will load GDT selectors upon a userland->kernel transition
+and will never dereference anything in the LDT).
+
+linux 2.6 has per-CPU GDTs, each initialized from cpu_gdt_table
+in arch/i386/kernel/head.S . the kernel uses 3 descriptors there,
+__KERNEL_CS for %cs,  __KERNEL_DS for %ss and __USER_DS for %ds/%es
+(since 2.6.20 there's a per-CPU data segment stored in %gs and in
+2.6.21 it'll move into %fs, but it's not relevant for UDEREF).
+of these, __KERNEL_* are DPL=0 (i.e., for kernel use only), however
+__USER_DS is DPL=3, the default userland data selector loaded for
+any new userland process as well.
+
+all of these descriptors define a flat segment (0-4GB), so there's
+no userland/kernel separation at the segmentation level, it's
+solely up to the paging logic (i guess you already know why that's
+bad, but see below). the reason that the kernel uses the default
+userland data selectors/segments is that presumably there's some
+performance gain when the CPU reloads a segment register with the
+same value it already has (coming from a typical ELF process the
+data selectors will already have __USER_DS in them). i never checked
+this claim and maybe i misremember it, but in any case, regardless
+of which __*_DS selector the kernel uses, they're all flat anyway.
+
+now we're getting to the actual topic ;-). the problem i set out to
+solve with UDEREF was that many kernel bugs can be exploited (at all
+or more reliably) due to the fact that on i386 most OSs don't separate
+the userland virtual address space from that of the kernel. this in
+turn means that whenever userland can make the kernel (unexpectedly)
+dereference a userland controlled pointer, userland can control the
+data (and sometimes, control) flow of the kernel by virtue of providing
+the attack data in its own userland address range as it's fully visible
+in the kernel's virtual address space as well (the two virtual address
+spaces are the same because of the use of flat segments and lack of
+effective address space IDs in the i386 paging logic).
+
+since there're two stages in logical->physical address translation,
+one can attack the problem at each level. one approach is to make
+use of paging by realizing that %cr3 is effectively the address space
+ID on i386. that is, one can switch (reload) %cr3 on every kernel
+entry to point to page tables that simply don't map userland. this
+approach has been tried on linux in the so-called 4:4 VM patches
+(Red Hat, Ingo Molnar) and was used/offered in some RHEL series (it
+wasn't for security per se, but to provide a 4GB effective userland
+virtual address space for aging 32-bit machines with lots of memory).
+it has one big problem: performance impact. so much that it wasn't
+even on the table for me.
+
+the other approach is to make use of segmentation, which is what i
+do in UDEREF. the basic idea is very simple and very old, i first
+saw it in use (don't laugh ;-) on windows 95 where this particular
+feature caught NULL userland derefs in win32 processes (and prevented
+them from trashing the low DOS related memory). the trick they used
+was that they set up the userland segments as so-called expand-down
+segments, that is, the limit field in the segment descriptor meant
+the lowest valid address for the segment, so they could set it to
+something low, i forget the exact number now, but it was either 4MB
+or 4k.
+
+the same trick is used in UDEREF with a few more modifications. the
+new segment setup is as follows:
+
+kernel %cs:
+ still __KERNEL_CS which remains flat (there's another PaX feature
+ which limits it properly, but let's not digress)
+
+kernel %ss/%ds/%es:
+  all switched to __KERNEL_DS which is no longer flat but turned
+  into an expand-down segment with a lower limit set at the top of
+  the userland address space (__PAGE_OFFSET in linux, normally it's
+  at 3GB)
+
+userland %cs: stays the same __USER_CS, flat, doesn't matter
+
+userland %ds/%es/%ss:
+  stays as __USER_DS but limited (most of the time) to the userland
+  address space size.
+
+this setup so far is enough to cause a GPF whenever the kernel tries
+to dereference a pointer value that falls into the userland virtual
+address range (say, 0-3GB, i.e., NULL pointers are automatically
+included). what it's not enough for is the need to allow data transfer
+between userland/kernel and kernel/kernel in certain contexts. let's
+see them one by one.
+
+as you know, syscalls often need to copy data to/from userland which
+on i386 is most often implemented by the (rep) movs insn. this insn
+uses two data segments, one for the source, one for the destination
+(former can be overridden). this blind movs works in the usual case
+because all segments are flat, so data can freely move between kernel
+and userland virtual addresses.
+
+with the above described setup however we have a problem since
+neither %ds nor %es allow userland access. furthermore, even if one
+could override the source segment (so that one could use one of the
+remaining segment registers for copying from userland), it wouldn't
+help with copying to userland. the solution is that in these special
+copy functions (on linux it's all in asm) we reload the proper segment
+register with __USER_DS for the duration of the copy therefore we allow
+the copy to succeed *and* at the same time not allow kernel addresses
+where they're not expected (e.g., when the kernel copies from userland,
+this won't allow a source pointer to kernel land and vice versa).
+
+we're still not done however, as there's a special kernel/kernel copy
+problem (i don't know if it's specific to linux): certain internal
+kernel functions call syscall functions more or less directly (say,
+setting up a kernel thread or even just starting init makes use of
+the fork interface). this among others means that any normal userland
+pointer input these syscall expect will fall into the kernel address
+range - and would fail input validation right at the beginning, were
+it not for a trick linux uses: set_fs().
+
+there's some history behind this function because in early days linux
+actually used to be more secure in this regard as it used segmentation
+logic for userland/kernel separation (yes, there's some irony of fate
+here ;-) and it provided this set_fs() call to tell the kernel that
+further userland/kernel memory copy operations will actually stay within
+the kernel. many years later this interface was effectively switched off
+because linux turned to flat segments (the baby went with the bathwater
+or something like that) however one of its features stayed: the address
+space limit check in the low level copying functions. this limit check
+simply compared the to-be-dereferenced pointer against the current
+address space limit allowed for such copying (set_fs() itself was reduced
+to change only this limit as needed).
+
+with the non-flat segment setup described above we would still pass the
+address space limit check because it's not directly derived from the
+GDT descriptor limit but a per-thread variable, however we would fail
+the actual copy because one of the segment registers is reloaded with
+__USER_DS and that won't allow kernel addresses. the assumption i broke
+is that the separately maintained address space limit corresponds to
+the actual segment limit therefore the fix has to be that somehow this
+segment limit needs to be updated every time set_fs() is called.
+
+this can be accomplished by either updating the limit on __USER_DS (so
+that the actual copy functions don't have to change) or by loading either
+__USER_DS or __KERNEL_DS in said copy functions (then each one of them
+has to be patched for this).
+
+i went with the former for two reasons. one, it's a lot less code/work to
+update the (per-CPU) GDT descriptor vs. changing all the copy functions
+to conditonally load either __USER_DS or __KERNEL_DS (it took some time
+to find most/all such copy code, besides the obvious copy_{to/from}_user
+functions linux has a special IP checksumming code used for both kernel
+and userland buffers, then there were some direct userland address accesses
+in reboot code (to patch BIOS variables), etc).
+
+two, i wasn't actually sure that set_fs() is only ever called for
+kernel/kernel copy situatons (since it only raises the allowed address
+space limit, therefore on i386 it'd still allow userland accesses), so
+doing the 'conditional load in the copy code' stuff just to find out it
+was in vain wasn't worth it. i still want to try it out though because
+this is the reason i called the current approach 'best-effort' separation
+only: in set_fs() context a kernel bug has actually free reign over
+pointers in the copy functions (yes, it's still a lot smaller attack
+surface but i'm a maximalist ;-).
+
+so, as a summary: UDEREF makes sure that (data) segments for userland and
+the kernel are properly limited, either upwards (userland) or downwards
+(kernel). furthermore, every userland/kernel copy code is patched to use
+the proper segments for the inter-segment copy (the challenging part was
+to find all such code ;-). as a linux specialty, some care is taken to
+ensure that the same copy code works for kernel/kernel copying as well.
+
+note that GDT patching can be done safely because linux 2.6 has per-CPU
+GDTs (and in the context switch code i take care of the __USER_DS limit
+based on the set_fs() limit), on linux 2.4 and earlier this cannot be
+done (there's one shared GDT only) and there all the copy functions are
+potential escape points.
+----------------------------------------------------------------------------
+
+that'd be it in a nutshell, feel free to ask me if you have questions.
+
+cheers,
+   PaX Team
+
+
+To: pageexec@freemail.hu
+Cc: Elad Efrat
+Subject: Re: PaX uderef
+Date: Wed,  4 Apr 2007 15:14:45 +0900 (JST)
+From: [censored]
+
+> On 3 Apr 2007 at 20:28, Elad Efrat wrote:
+> 
+> > [censored],
+> > 
+> > I've cc'd the PaX author to this mail so he can elaborate on what uderef
+> > is, how it works, and why it was introduced.
+> 
+> hello guys,
+> 
+> in the following i'll assume that you have good knowledge of i386
+> protected mode details and some concepts about how modern OSs make
+> use of them and i'll only explain what linux (2.6 in particular)
+> does and how UDEREF modifies it to achieve best-effort (read: not
+> perfect) userland/kernel separation.  
+
+thanks for explanation.
+
+> there's some history behind this function because in early days linux
+> actually used to be more secure in this regard as it used segmentation
+> logic for userland/kernel separation (yes, there's some irony of fate
+> here ;-) and it provided this set_fs() call to tell the kernel that
+> further userland/kernel memory copy operations will actually stay within
+> the kernel. many years later this interface was effectively switched off
+> because linux turned to flat segments (the baby went with the bathwater
+> or something like that) however one of its features stayed: the address
+> space limit check in the low level copying functions. this limit check
+> simply compared the to-be-dereferenced pointer against the current
+> address space limit allowed for such copying (set_fs() itself was reduced
+> to change only this limit as needed).
+
+loading selectors is rather expensive operation.
+well, it might be cheaper than reloading of cr3,
+but it's still something i (and linux folks i guess) don't want to do
+on every copying to/from userspace.
+do you have some numbers of the performance penalty?
+
+> note that GDT patching can be done safely because linux 2.6 has per-CPU
+> GDTs (and in the context switch code i take care of the __USER_DS limit
+> based on the set_fs() limit), on linux 2.4 and earlier this cannot be
+> done (there's one shared GDT only) and there all the copy functions are
+> potential escape points.
+
+what happens when you slept at some point after set_fs(), and woke up
+on another cpu?
+
+[censored]
+
+
+From: pageexec@freemail.hu
+To: [censored]
+Date: Wed, 04 Apr 2007 11:21:52 +0200
+Subject: Re: PaX uderef
+Reply-to: pageexec@freemail.hu
+CC: Elad Efrat
+
+On 4 Apr 2007 at 15:14, [censored] wrote:
+
+> loading selectors is rather expensive operation.
+> well, it might be cheaper than reloading of cr3,
+
+the cr3 reload approach is a lot slower not only because it flushes
+the TLBs on every user/kernel transition, but because it also has to
+handle the very same user/kernel copy situation: due to the address
+space switch, userland virtual addresses are no longer directly
+accessible and require special mappings to be set up for the duration
+of the copy. that means TLB entry invalidations which is one of the
+slowest operations of the CPU.
+
+> but it's still something i (and linux folks i guess) don't want to do
+> on every copying to/from userspace.
+> do you have some numbers of the performance penalty?
+
+i don't have micro-benchmarks on these functions per se, only the
+usual kernbench which didn't show any measurable impact (which is
+to be expected as it is not heavy on user/kernel copying, most time
+is spent in userland and the most used syscalls that do such copying
+are already expensive enough that any impact from UDEREF would
+disappear in the noise). if you have an idea for which syscall to
+exercise for this (i.e., something that spends most of its time in
+copying), let me know.
+
+> > note that GDT patching can be done safely because linux 2.6 has per-CPU
+> > GDTs (and in the context switch code i take care of the __USER_DS limit
+> > based on the set_fs() limit), on linux 2.4 and earlier this cannot be
+> > done (there's one shared GDT only) and there all the copy functions are
+> > potential escape points.
+> 
+> what happens when you slept at some point after set_fs(), and woke up
+> on another cpu?
+
+both sleeping and waking up result in a context switch on each
+affected CPU (a call to __switch_to() in particular), therefore
+as i stated, the changes i made to that function ensure that the
+limit of __USER_DS of the given CPU's GDT will be updated to
+reflect the address space limit of the incoming thread (the limit
+of __USER_DS becomes part of the thread's state information as it
+now faithfully follows the already existing thread_info->addr_limit
+set by set_fs() - you can think of UDEREF as hardware enforcement
+of set_fs(), among others).
+
+
+To: pageexec@freemail.hu
+Cc: Elad Efrat
+Subject: Re: PaX uderef
+Date: Wed,  4 Apr 2007 18:53:18 +0900 (JST)
+From: [censored]
+
+> if you have an idea for which syscall to
+> exercise for this (i.e., something that spends most of its time in
+> copying), let me know.
+
+getresuid?
+
+> > > note that GDT patching can be done safely because linux 2.6 has per-CPU
+> > > GDTs (and in the context switch code i take care of the __USER_DS limit
+> > > based on the set_fs() limit), on linux 2.4 and earlier this cannot be
+> > > done (there's one shared GDT only) and there all the copy functions are
+> > > potential escape points.
+> > 
+> > what happens when you slept at some point after set_fs(), and woke up
+> > on another cpu?
+> 
+> both sleeping and waking up result in a context switch on each
+> affected CPU (a call to __switch_to() in particular), therefore
+> as i stated, the changes i made to that function ensure that the
+> limit of __USER_DS of the given CPU's GDT will be updated to
+> reflect the address space limit of the incoming thread (the limit
+> of __USER_DS becomes part of the thread's state information as it
+> now faithfully follows the already existing thread_info->addr_limit
+> set by set_fs() - you can think of UDEREF as hardware enforcement
+> of set_fs(), among others).
+
+ok, i have missed "in the context switch code ..." in your
+explanation.  thanks.
+
+[censored]
+
+
+From: pageexec@freemail.hu
+To: [censored]
+Date: Sun, 08 Apr 2007 18:40:19 +0200
+Subject: Re: PaX uderef
+CC: Elad Efrat
+
+On 4 Apr 2007 at 18:53, [censored] wrote:
+
+> > if you have an idea for which syscall to
+> > exercise for this (i.e., something that spends most of its time in
+> > copying), let me know.
+> 
+> getresuid?
+
+sorry for the delay but i didn't have a native linux install and just
+quickly put it on a new laptop. the box has a T7200 (core2/2GHz) with
+2GB of RAM. the test was a simple looping around getresuid() with valid
+pointer arguments, 10 million times (everything was compiled with gentoo's
+gcc 4.1.1). i tested the following kernels:
+
+1. 2.6.17-gentoo-r7 (from the gentoo 2006.1 livecd)
+real    0m1.440s 0m1.421s 0m1.422s 0m1.415s 0m1.426s 0m1.425s 0m1.424s 
+0m1.421s
+user    0m0.700s 0m0.680s 0m0.800s 0m0.670s 0m0.750s 0m0.740s 0m0.690s 
+0m0.750s
+sys     0m0.720s 0m0.740s 0m0.620s 0m0.750s 0m0.670s 0m0.690s 0m0.730s 
+0m0.670s
+
+2. 2.6.21-rc6 (latest on kernel.org, without PARAVIRT)
+real    0m1.477s 0m1.471s 0m1.466s 0m1.466s 0m1.428s 0m1.471s 0m1.416s 
+0m1.466s
+user    0m0.808s 0m0.876s 0m0.784s 0m0.792s 0m0.704s 0m0.960s 0m0.668s 
+0m0.752s
+sys     0m0.648s 0m0.596s 0m0.680s 0m0.676s 0m0.724s 0m0.512s 0m0.748s 
+0m0.712s
+
+3. 2.6.21-rc6 (latest on kernel.org, with PARAVIRT)
+real    0m3.277s 0m3.258s 0m3.258s 0m3.268s 0m3.258s 0m3.268s 0m3.258s 
+0m3.258s
+user    0m1.840s 0m1.884s 0m1.868s 0m2.000s 0m1.840s 0m2.040s 0m1.828s 
+0m1.756s
+sys     0m1.416s 0m1.376s 0m1.388s 0m1.268s 0m1.416s 0m1.228s 0m1.428s 
+0m1.500s
+
+4. 2.6.21-rc6-pax (not public yet, without PARAVIRT, no PaX enabled)
+real    0m1.976s 0m1.949s 0m1.948s 0m1.928s 0m1.949s 0m1.948s 0m1.949s 
+0m1.948s
+user    0m0.868s 0m0.864s 0m0.972s 0m0.716s 0m0.896s 0m0.848s 0m0.824s 
+0m0.780s
+sys     0m1.080s 0m1.084s 0m0.976s 0m1.212s 0m1.052s 0m1.100s 0m1.124s 
+0m1.168s
+
+5. 2.6.21-rc6-pax (not public yet, without PARAVIRT, with UDEREF)
+real    0m2.038s 0m2.029s 0m2.030s 0m1.991s 0m2.025s 0m1.991s 0m2.030s 
+0m2.029s
+user    0m0.880s 0m0.940s 0m0.824s 0m0.728s 0m0.784s 0m0.864s 0m0.796s 
+0m0.752s
+sys     0m1.148s 0m1.088s 0m1.204s 0m1.264s 0m1.240s 0m1.124s 0m1.236s 
+0m1.276s
+
+6. 2.6.21-rc6-pax (not public yet, with PARAVIRT, with UDEREF)
+real    0m3.696s 0m3.685s 0m3.685s 0m3.686s 0m3.719s 0m3.690s 0m3.700s 
+0m3.696s
+user    0m1.952s 0m1.936s 0m1.844s 0m1.832s 0m1.804s 0m1.632s 0m1.816s 
+0m1.892s
+sys     0m1.732s 0m1.748s 0m1.840s 0m1.852s 0m1.912s 0m2.056s 0m1.880s 
+0m1.800s
+
+some notes:
+
+- the difference between 1. and 2. is probably due to some .config option
+  (e.g., i enabled syscall auditing myself)
+
+- 2. and 3. show the effect of PARAVIRT (not that i wanted to test it
+  per se but i accidentally left it enabled in PaX first so i reran
+  everything twice ;P)
+
+- 3. and 4. show that some PaX features are not controlled by .config,
+  among others the core part of UDEREF (segment reloads and overrides
+  on the userland accessors) is always 'on'
+
+- 4. and 5. show that actually enabling UDEREF (changing the __USER_DS
+  limit) has a small impact over just 4. alone (i.e., segment register
+  reloads and overrides), so there seems to be some credence to the theory
+  that the speed of segment reloads does depend on the actual descriptor
+  content
+
+
+To: pageexec@freemail.hu
+Cc: Elad Efrat
+Subject: Re: PaX uderef
+Date: Tue, 10 Apr 2007 17:49:33 +0900 (JST)
+From: [censored]
+
+hi,
+
+> On 4 Apr 2007 at 18:53, [censored] wrote:
+> 
+> > > if you have an idea for which syscall to
+> > > exercise for this (i.e., something that spends most of its time in
+> > > copying), let me know.
+> > 
+> > getresuid?
+> 
+> sorry for the delay but i didn't have a native linux install and just
+> quickly put it on a new laptop. the box has a T7200 (core2/2GHz) with
+> 2GB of RAM. the test was a simple looping around getresuid() with valid
+> pointer arguments, 10 million times (everything was compiled with gentoo's
+> gcc 4.1.1). i tested the following kernels:
+> 
+> 1. 2.6.17-gentoo-r7 (from the gentoo 2006.1 livecd)
+> real    0m1.440s 0m1.421s 0m1.422s 0m1.415s 0m1.426s 0m1.425s 0m1.424s 
+> 0m1.421s
+> user    0m0.700s 0m0.680s 0m0.800s 0m0.670s 0m0.750s 0m0.740s 0m0.690s 
+> 0m0.750s
+> sys     0m0.720s 0m0.740s 0m0.620s 0m0.750s 0m0.670s 0m0.690s 0m0.730s 
+> 0m0.670s
+
+does these columns mean you ran the same test 8 times?
+
+> 2. 2.6.21-rc6 (latest on kernel.org, without PARAVIRT)
+> real    0m1.477s 0m1.471s 0m1.466s 0m1.466s 0m1.428s 0m1.471s 0m1.416s 
+> 0m1.466s
+> user    0m0.808s 0m0.876s 0m0.784s 0m0.792s 0m0.704s 0m0.960s 0m0.668s 
+> 0m0.752s
+> sys     0m0.648s 0m0.596s 0m0.680s 0m0.676s 0m0.724s 0m0.512s 0m0.748s 
+> 0m0.712s
+> 
+> 3. 2.6.21-rc6 (latest on kernel.org, with PARAVIRT)
+> real    0m3.277s 0m3.258s 0m3.258s 0m3.268s 0m3.258s 0m3.268s 0m3.258s 
+> 0m3.258s
+> user    0m1.840s 0m1.884s 0m1.868s 0m2.000s 0m1.840s 0m2.040s 0m1.828s 
+> 0m1.756s
+> sys     0m1.416s 0m1.376s 0m1.388s 0m1.268s 0m1.416s 0m1.228s 0m1.428s 
+> 0m1.500s
+> 
+> 4. 2.6.21-rc6-pax (not public yet, without PARAVIRT, no PaX enabled)
+> real    0m1.976s 0m1.949s 0m1.948s 0m1.928s 0m1.949s 0m1.948s 0m1.949s 
+> 0m1.948s
+> user    0m0.868s 0m0.864s 0m0.972s 0m0.716s 0m0.896s 0m0.848s 0m0.824s 
+> 0m0.780s
+> sys     0m1.080s 0m1.084s 0m0.976s 0m1.212s 0m1.052s 0m1.100s 0m1.124s 
+> 0m1.168s
+> 
+> 5. 2.6.21-rc6-pax (not public yet, without PARAVIRT, with UDEREF)
+> real    0m2.038s 0m2.029s 0m2.030s 0m1.991s 0m2.025s 0m1.991s 0m2.030s 
+> 0m2.029s
+> user    0m0.880s 0m0.940s 0m0.824s 0m0.728s 0m0.784s 0m0.864s 0m0.796s 
+> 0m0.752s
+> sys     0m1.148s 0m1.088s 0m1.204s 0m1.264s 0m1.240s 0m1.124s 0m1.236s 
+> 0m1.276s
+> 
+> 6. 2.6.21-rc6-pax (not public yet, with PARAVIRT, with UDEREF)
+> real    0m3.696s 0m3.685s 0m3.685s 0m3.686s 0m3.719s 0m3.690s 0m3.700s 
+> 0m3.696s
+> user    0m1.952s 0m1.936s 0m1.844s 0m1.832s 0m1.804s 0m1.632s 0m1.816s 
+> 0m1.892s
+> sys     0m1.732s 0m1.748s 0m1.840s 0m1.852s 0m1.912s 0m2.056s 0m1.880s 
+> 0m1.800s
+> 
+> some notes:
+> 
+> - the difference between 1. and 2. is probably due to some .config option
+>   (e.g., i enabled syscall auditing myself)
+> 
+> - 2. and 3. show the effect of PARAVIRT (not that i wanted to test it
+>   per se but i accidentally left it enabled in PaX first so i reran
+>   everything twice ;P)
+
+i wonder why it affects user time..
+
+> - 3. and 4. show that some PaX features are not controlled by .config,
+>   among others the core part of UDEREF (segment reloads and overrides
+>   on the userland accessors) is always 'on'
+
+2. and 4. ?
+
+> - 4. and 5. show that actually enabling UDEREF (changing the __USER_DS
+>   limit) has a small impact over just 4. alone (i.e., segment register
+>   reloads and overrides), so there seems to be some credence to the theory
+>   that the speed of segment reloads does depend on the actual descriptor
+>   content
+
+hm, interesting.
+
+thanks for the info.
+
+[censored]
+
+
+From: pageexec@freemail.hu
+To: [censored]
+Date: Tue, 10 Apr 2007 11:42:49 +0200
+Subject: Re: PaX uderef
+CC: Elad Efrat
+
+On 10 Apr 2007 at 17:49, [censored] wrote:
+
+> > 1. 2.6.17-gentoo-r7 (from the gentoo 2006.1 livecd)
+> > real    0m1.440s 0m1.421s 0m1.422s 0m1.415s 0m1.426s 0m1.425s 0m1.424s 
+> > 0m1.421s
+> > user    0m0.700s 0m0.680s 0m0.800s 0m0.670s 0m0.750s 0m0.740s 0m0.690s 
+> > 0m0.750s
+> > sys     0m0.720s 0m0.740s 0m0.620s 0m0.750s 0m0.670s 0m0.690s 0m0.730s 
+> > 0m0.670s
+> 
+> does these columns mean you ran the same test 8 times?
+
+yes, each column is one run of 'time ./test', i thought it'd be easier
+to compare the times when arranged this way.
+
+> > - 2. and 3. show the effect of PARAVIRT (not that i wanted to test it
+> >   per se but i accidentally left it enabled in PaX first so i reran
+> >   everything twice ;P)
+> 
+> i wonder why it affects user time..
+
+my only guess is that PARAVIRT disables the vdso (by default, and i didn't
+explicitly enable it) so that has an effect on the syscall itself (int 80h
+vs. sysenter).
+
+> > - 3. and 4. show that some PaX features are not controlled by .config,
+> >   among others the core part of UDEREF (segment reloads and overrides
+> >   on the userland accessors) is always 'on'
+> 
+> 2. and 4. ?
+
+yes i meant those indeed.

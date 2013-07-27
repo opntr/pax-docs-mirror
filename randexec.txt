@@ -1,0 +1,126 @@
+1. Design
+
+   The goal of RANDEXEC is to introduce randomness into the main executable
+   file mapping addresses.
+
+   While RANDMMAP takes care of randomizing ELF executables of the ET_DYN
+   kind, a special approach is needed for randomizing the position of ET_EXEC
+   ELF executables. As far as randomization is concerned the fundamental
+   difference between the two kinds of ELF files is the lack/presence of
+   adequate relocation information. Traditionally ET_EXEC files are created
+   by the linker with the assumption that they will be loaded at a fixed
+   address and hence relocation information is superfluous and mostly omitted.
+   It is worth noting though that ld from the GNU binutils package can be told
+   to emit full relocation information into ET_EXEC files, but this is a
+   relatively new and not widely (if at all) used feature.
+
+   To understand the technique that allows randomization even without enough
+   relocation information, consider what can happen when such an ET_EXEC file
+   is mapped into memory at an address other than its expected base address
+   (0x08048000 on i386). As soon as the CPU attempts to execute an instruction
+   (e.g., because of an absolute jump) or access data at the original address,
+   it will encounter a page fault (provided there is no other mapping at those
+   addresses). To avoid these page faults, we have to provide a file mapping
+   of the ET_EXEC file at the original base address as well.
+
+   This is not enough however for two reasons. First, the code may make data
+   accesses in a position independent manner (e.g., the various crt*.o files
+   linked into an executable contain such code) so we would have to ensure
+   that the two file mappings are mirroring each other's content all the time.
+
+   Second, we cannot allow the text segment mapping at the original base
+   address to remain executable, since that would defeat the very purpose of
+   randomization (there should be no executable code at a predictable/known
+   address in the task's address space). However the text segment must be
+   available for data accesses since the code may very well contain data
+   references to absolute addresses (which would point back to the original
+   mapping).
+
+   So the next refinement of our technique is that we will create two mappings
+   of the ET_EXEC file that will mirror each other, the first one at its
+   original base address and the second at a randomized one and we ensure that
+   the original mappings are not executable.
+
+   There is one last feature missing: since the code may attempt to execute
+   from the original and now non-executable mapping, it will produce extra
+   page faults that will need special handling. In particular, whenever we
+   detect a page fault due to an instruction fetch attempt in such a region,
+   we will redirect the execution flow back into the randomized mirror by
+   simply modifying the userland instruction pointer. Since automatic
+   redirection would again defeat the purpose of randomization, we can do
+   various checks in the page fault handler before we decide to go ahead with
+   the redirection. In the current implementation we attempt to detect so
+   called return-to-libc style attacks against the ET_EXEC mapping by checking
+   the userland stack for its signature. Since such a signature may (and does)
+   occur due to normal program code as well, this detection can (and does)
+   produce false alarms (that is, it can kill an innocent task), however it
+   will never miss the attack attempt it was designed to detect.
+
+   Now that the basic RANDEXEC technique is clear, let's see how it is affected
+   by SEGMEXEC. Under SEGMEXEC the executable status of a page is expressed by
+   not its page protection flags but its location in linear address space.
+   That is, executable regions have to be mirrored. Since RANDEXEC itself needs
+   mirroring, one may wonder how the triple mirroring for the ET_EXEC file's
+   text section can be accomplished (the current vma mirroring implementation
+   supports only the simplest mirroring setup, that is two regions mirroring
+   each other). The triple mirroring would be needed because we have the
+   original and the randomized mapping in the data segment region (0-1.5 GB in
+   linear address space) plus we need the third one in the code segment region
+   (1.5-3 GB in linear address space). However consider if we really need the
+   randomized mapping of the file's text section in the data segment region.
+   Such data accesses could occur only if there was position independent code
+   in the executable that would learn its own position in memory then use that
+   to access data stored in the text section. In most real life applications
+   no such code exists, simply because programs are compiled/linked under the
+   assumption that they will be executed at a fixed/known address therefore
+   there is no need for position independence (exceptions are incorrectly
+   linked programs where a position independent library is statically linked
+   into the executable, such as the Modula-3 runtime in CVSup). This leaves
+   us now with just two mappings which the vma mirroring system supports well.
+
+
+2. Implementation
+
+   The core of RANDEXEC is vma mirroring which is discussed in a separate
+   document. The mirrors for the ET_EXEC file segments are set up in the
+   load_elf_binary() function in fs/binfmt_elf.c. The mirrors are created
+   differently depending on which of PAGEEXEC/SEGMEXEC is active.
+
+   The PAGEEXEC logic: every ELF segment is mapped as non-executable at its
+   original base address and the mirrors are created at a random address
+   returned by get_unmapped_area(). This also means that they will be using
+   the same randomization that other mmap() requests see.
+
+   The SEGMEXEC logic: the mappings at the original base address are mapped
+   as normal (no need for removing PROT_EXEC from the requests since they will
+   go into the data segment region anyway) with a little change: instead of
+   using elf_map() we directly use do_mmap_pgoff(). This is because elf_map()
+   is a wrapper around do_mmap() which in turn would attempt to create the
+   normal SEGMEXEC mirrors and is not suitable here since we need to position
+   the mirrors in a different way. As under PAGEEXEC, get_unmapped_area() is
+   used to get a random address where the ELF segment mirrors will be mapped.
+   The difference is in the mapping of executable mirrors: they will go into
+   the code segment region (1.5-3 GB linear address range) and in the data
+   segment (0-1.5 GB range) at the same logical addresses we create dummy
+   anonymous mappings as placeholders (otherwise there would be holes in the
+   data segment which the kernel later would try to use for mapping the ELF
+   interpreter and that could potentially unmap our randomized mirrors).
+
+   The extra page fault handling and execution flow redirection happens in
+   the archictecture specific low-level page fault handlers, for now it exists
+   for the i386 architecture only. When the do_page_fault() or the
+   pax_do_page_fault() functions in arch/i386/mm/fault.c detect an instruction
+   fetch attempt (that is, when the fault address is equal to the faulting EIP)
+   then pax_handle_fetch_fault() will examine if the fault occured within the
+   main executable's code segment. If it did then we take a look at just below
+   the current userland stack pointer (ESP-4) to see if it contains the address
+   of the fault location. If it does, we declare it as a return-to-libc style
+   attack attempt and terminate the task, otherwise we readjust the userland
+   EIP to point back to the randomized mirror region and return to userland.
+
+   Note that this check works for detecting attacks where control flow was
+   changed by a 'retn' instruction (this is the normal way of returning from
+   a function as the caller is expected to adjust the stack), other forms
+   ('retf' or 'retn xx') would need more, slightly different verification (as
+   they modify the ESP register by more than 4, we would have to check more
+   below ESP at the expense of increasing the false positive ratio).

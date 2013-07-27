@@ -1,0 +1,74 @@
+Hello everyone,
+
+i guess those of you tracking the test patches have already noticed that
+we recently added support for UDEREF on amd64 as well. now that hopefully
+the silly problems have been worked out, it's time to talk about it a bit.
+
+before everything, let's get out one thing that i'll probably repeat every
+now and then: UDEREF on amd64 isn't and will never be the same as on i386.
+it's just the way it is, it cannot be 'fixed'. now let's see what it can
+still do on amd64.
+
+as you probably know (does anyone read config help? ;), UDEREF wants to
+ensure that userland and kernel address spaces are properly separated. in
+particular, gratuitous dereference of userland addresses by kernel code
+should result in an oops instead of userland taking over kernel data flow,
+or worse, control flow as well (think of the past year's worth of NULL
+dereference based exploits). this separation can be implemented with pretty
+much no overhead on i386, but unfortunately amd64 lacks the necessary
+segmentation logic and the alternative ain't pretty ;).
+
+so what does UDEREF do on amd64? on userland->kernel transitions it basically
+unmaps the original userland address range and remaps it at a different address
+using non-exec/supervisor rights (so direct code execution as used by most
+exploits is not possible at least). this remapping is the main cause of its
+performance impact as well, and i think it cannot really be reduced any further.
+in any case, most kernel code will run without access to the actual userland
+address range, so in this sense it's similar to what UDEREF on i386 offers.
+
+this is also where the similarities end :), so let's look at the bad stuff
+now. UDEREF/amd64 doesn't ensure that the (legitimate) userland accessor
+functions cannot actually access kernel memory when only userland is allowed
+(some in-kernel users of certain syscalls can temporarily access kernel memory
+as userland, and that is enforced on UDEREF/i386 but not on amd64). so if
+there's a bug where userland can trick the kernel into accessing a userland
+pointer that actually points to kernel space, it'll succeed, unlike on i386.
+
+the other bad thing is the presence of the userland shadow area. this has
+two consequences: 1. the userland address space size is smaller under UDEREF
+(42 vs. 47 bits, with corresponding reduction of ASLR of course), 2. this
+shadow area is always mapped so kernel code accidentally accessing its range
+may not oops on it and can be exploited (such accesses can usually happen only
+if an exploit can make the kernel dereference arbitrary addresses in which
+case the presence of this area is the least of your concerns though).
+
+what about performance? well, 'it depends', in particular it depends on the
+amount of user/kernel transitions of your workload as that's where the extra
+code really hits (it's basically a TLB flush and two CR0 writes if you have
+KERNEXEC as well, say 600 cycles + TLB repopulation time). on a simple
+compilation test i get these times:
+
+  #time emerge portage -j2 on 2.6.33.1-pax no UDEREF
+  25.55user 7.44system 0:36.16elapsed 91%CPU (0avgtext+0avgdata 555648maxresident)k
+  56inputs+56816outputs (0major+1715421minor)pagefaults 0swaps
+
+  #time emerge portage -j2 on 2.6.32.10-pax UDEREF KERNEXEC
+  28.01user 11.03system 0:38.54elapsed 101%CPU (0avgtext+0avgdata 555600maxresident)k
+  56inputs+56832outputs (0major+1718704minor)pagefaults 0swaps
+
+feel free to submit benchmarks (preferably on real life apps, not synthetic) so
+that people know better what to expect. as usual, virtualization doesn't like the
+tricks and suffers more, although less than i386, so the pax_nouderef kernel
+command line option will work for amd64 as well.
+
+last but not least a note on implementation. besides the already mentioned
+special userland shadow area there's another important bit: per-CPU PGDs.
+what this does is simple: each CPU gets its own top-level page directory
+for its exclusive use (instead of the usual per-process PGD). this among
+other things means that we can begin the proper lockdown of the entire page
+table hierarchy (a todo item for KERNEXEC as well, that's why this feature
+is also now enabled there, even on i386/PAE).
+
+so this is it in a nutshell, if you have questions, comments, complaints,
+etc, you know where to reach us ;).
+
