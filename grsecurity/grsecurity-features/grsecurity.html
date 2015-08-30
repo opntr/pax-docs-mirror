@@ -1,0 +1,540 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml"><head>
+	<meta http-equiv="Content-Language" content="en">
+	<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+	<meta name="robots" content="NOODP, NOARCHIVE">
+	<title>grsecurity</title>
+	<link rel="stylesheet" type="text/css" href="grsecurity_files/normalize.css">
+	<link rel="stylesheet" type="text/css" href="grsecurity_files/style.css">
+	<link rel="stylesheet" type="text/css" href="grsecurity_files/font-awesome.css">
+	<link rel="stylesheet" type="text/css" href="grsecurity_files/jquery-ui.css">
+	<link rel="stylesheet" type="text/css" href="grsecurity_files/simplegrid.css">
+        <meta name="viewport" content="width=1050, initial-scale=1">
+        <meta name="twitter:site" content="@grsecurity">
+        <meta name="twitter:creator" content="@grsecurity">
+
+</head>
+<body>
+<script src="grsecurity_files/ga.html" async="" type="text/javascript"></script><script src="grsecurity_files/analytics.js"></script>
+<div class="header_background">
+        <div class="header">
+                <img src="grsecurity_files/header_logo.png" class="header_logo">
+        </div>
+</div>
+<div class="header_menu_background">
+        <div class="header_menu">
+                <ul class="header_menu">
+<li><a href="http://grsecurity.net/index.php" onclick="javascript: _gaq.push(['_trackPageview', '/docs/<i class='fa fa-home fa-lg'></i>']);"><i class="fa fa-home fa-lg"></i></a></li><li></li>
+<li><a href="http://forums.grsecurity.net/viewforum.php?f=7" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Blog']);">Blog</a></li><li></li>
+<li><a href="http://en.wikibooks.org/wiki/Grsecurity" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Documentation']);">Documentation</a></li><li></li>
+<li><a href="http://grsecurity.net/features.php" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Features']);">Features</a></li><li></li>
+<li><a href="http://grsecurity.net/links.php" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Links']);">Links</a></li><li></li>
+<li><a href="http://grsecurity.net/contribute.php" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Contribute']);">Contribute</a></li><li></li>
+<li><a href="http://grsecurity.net/research.php" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Research']);">Research</a></li><li></li>
+<li><a href="http://grsecurity.net/papers.php" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Papers']);">Papers</a></li>                </ul>
+        </div>
+</div>
+<div class="header_menu_shadow"></div>
+<div class="main_container_background">
+        <div class="main_container">
+
+<div class="main_content">
+<p class="small_nav">Home &gt; Features</p>
+	<script src="grsecurity_files/jquery_005.js"></script>
+	<script src="grsecurity_files/jquery.js"></script>
+	<script src="grsecurity_files/jquery_003.js"></script>
+	<script src="grsecurity_files/jquery_002.js"></script>
+	<script src="grsecurity_files/jquery_004.js"></script>
+	<script src="grsecurity_files/jquery_006.js"></script>
+	<!-- script src="/masonry.pkgd.min.js" /script -->
+	<div class="ui-tabs ui-widget ui-widget-content ui-corner-all" id="tabs">
+	<div id="tablist">
+	<ul role="tablist" class="ui-tabs-nav ui-helper-reset ui-helper-clearfix ui-widget-header ui-corner-all">
+		<li aria-selected="true" aria-labelledby="ui-id-1" aria-controls="tabs-memdefense" tabindex="0" role="tab" class="ui-state-default ui-corner-top ui-tabs-active ui-state-active"><a id="ui-id-1" tabindex="-1" role="presentation" class="ui-tabs-anchor" href="#tabs-memdefense">Memory Corruption Defenses</a></li>
+		<li></li>
+		<li aria-selected="false" aria-labelledby="ui-id-2" aria-controls="tabs-fsharden" tabindex="-1" role="tab" class="ui-state-default ui-corner-top"><a id="ui-id-2" tabindex="-1" role="presentation" class="ui-tabs-anchor" href="#tabs-fsharden">Filesystem Hardening</a></li>
+		<li></li>
+		<li aria-selected="false" aria-labelledby="ui-id-3" aria-controls="tabs-mischarden" tabindex="-1" role="tab" class="ui-state-default ui-corner-top"><a id="ui-id-3" tabindex="-1" role="presentation" class="ui-tabs-anchor" href="#tabs-mischarden">Miscellaneous Protections</a></li>
+		<li></li>
+		<li aria-selected="false" aria-labelledby="ui-id-4" aria-controls="tabs-rbac" tabindex="-1" role="tab" class="ui-state-default ui-corner-top"><a id="ui-id-4" tabindex="-1" role="presentation" class="ui-tabs-anchor" href="#tabs-rbac">RBAC</a></li>
+		<li></li>
+		<li aria-selected="false" aria-labelledby="ui-id-5" aria-controls="tabs-gcc" tabindex="-1" role="tab" class="ui-state-default ui-corner-top"><a id="ui-id-5" tabindex="-1" role="presentation" class="ui-tabs-anchor" href="#tabs-gcc">GCC Plugins</a></li>
+	</ul>
+	</div>
+	<div style="display: block;" aria-hidden="false" aria-expanded="true" role="tabpanel" class="ui-tabs-panel ui-widget-content ui-corner-bottom" aria-labelledby="ui-id-1" id="tabs-memdefense">
+<div class="fancylist">
+<ol class="rounded-list">
+<li><a class="menuitem" href="#procmemmap">Industry-leading ASLR</a></li>
+<li><a class="menuitem" href="#usercopy">Bounds checks on kernel copies to/from userland</a></li>
+<li><a class="menuitem" href="#uderef">Prevents direct userland access by kernel</a></li>
+<li><a class="menuitem" href="#kstackoverflow">Prevents kernel stack overflows on 64-bit architectures</a></li>
+<li><a class="menuitem" href="#mprotect">Hardened userland memory permissions</a></li>
+<li><a class="menuitem" href="#threadstack">Random padding between thread stacks</a></li>
+<li><a class="menuitem" href="#hardenjit">Hardened BPF JIT against spray attacks</a></li>
+<li><a class="menuitem" href="#brute">Automatically responds to exploit bruteforcing</a></li>
+</ol>
+</div>
+<div class="menus"><div style="display: none;" class="menubox" id="procmemmap">
+	<h3>Industry-leading ASLR</h3>
+	<p>Grsecurity has led the way over the years in providing a proper ASLR
+ implementation that deals with the many ways in which an attacker can 
+influence ASLR or defeat it through system-provided information leaks 
+and entropy reduction.  In addition, the number of bits of entropy 
+applied to randomization of each memory region is significantly higher 
+in grsecurity compared to upstream's weaker ASLR implementation.</p>
+	<div class="menufooter"><p><a href="https://forums.grsecurity.net/viewtopic.php?f=7&amp;t=2574">Blog post outlining a number of local ASLR bypasses unfixed in Linux distros for years but solved in grsecurity</a><br><a href="http://eindbazen.net/2012/02/codegate-2012-vuln-500/">Blog
+ post from 2012 demonstrating a technique for disabling mmap 
+randomization on suid root binaries, unfixed to date in upstream Linux</a><br><a href="https://labs.mwrinfosecurity.com/blog/2010/09/02/assessing-the-tux-strength-part-2---into-the-kernel/">Report
+ by MWR Labs demonstrating a few of the differences between ASLR in 
+grsecurity (included in Gentoo Hardened in their testing) vs other 
+distros</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Harden_ASLR_against_information_leaks_and_entropy_reduction">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="usercopy">
+	<h3>Bounds checks on kernel copies to/from userland</h3>
+	<p>This feature hardens the functions the Linux kernel uses to copy 
+data to and from user applications.  It ensures copies to/from a heap 
+object don't exceed the object's size and that stack copies don't exceed
+ the size of the stack frame.  It further prevents modifying or leaking 
+sensitive kernel objects via these functions.</p>
+	<div class="menufooter"><p><a href="http://git.kernel.org/cgit/linux/kernel/git/torvalds/linux.git/commit/?id=42da2f948d949efd0111309f5827bf0298bcc9a4">PAX_USERCOPY discovered that iwconfig was leaking 64KB of uninitialized heap data to userland in some cases</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Harden_heap_object_copies_between_kernel_and_userland">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="uderef">
+	<h3>Prevents direct userland access by kernel</h3>
+	<p>Through PaX's UDEREF and KERNEXEC features, grsecurity forces any 
+userland data access to go through an approved accessor and rejects any 
+attempt to execute userland code in kernel context.  This prevents 
+exploitation of an entire class of vulnerabilities of which null pointer
+ dereferences are just a subset.  Another member of that larger class, 
+commonly exploited on other OSes, involves the various magic values used
+ throughout the kernel.  Many of these magic values, when interpreted as
+ pointers especially on 32-bit platforms, will point into userland.  On a
+ system without grsecurity, an attacker can provide specially crafted 
+data at these addresses in order to exploit the system.  Most kernel 
+exploits released for Linux require the ability to execute or directly 
+access data in userland -- by preventing both of these things, 
+grsecurity has rendered useless the majority of released Linux kernel 
+exploits.  In another sense, grsecurity provides functionality 
+equivalent to the SMEP and (unreleased) SMAP features of modern Intel 
+processors, on older x86 processors and even the ARM platform.</p>
+	<div class="menufooter"><p><a href="http://www.nvidia.com/download/driverResults.aspx/73666/en-us">NVIDIA driver update fixing flaw uncovered by UDEREF</a><br><a href="http://osdir.com/ml/linux.kernel.grsecurity/2006-08/msg00006.html">UDEREF catches exploitable bug in third-party kernel patch</a><br><a href="https://grsecurity.net/%7Espender/uderef.txt">Detailed write-up on initial implementation of i386 UDEREF</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Prevent_invalid_userland_pointer_dereference">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="kstackoverflow">
+	<h3>Prevents kernel stack overflows on 64-bit architectures</h3>
+	<p>While vulnerabilities arising through the improper use of 
+variable-length-arrays (VLAs) and runtime stack allocation are handled 
+automatically with a GCC plugin, grsecurity also provides a feature to 
+prevent exploitation arising from other sources of kernel stack 
+overflows: deep nesting and recursion.  On a mainline Linux kernel, a 
+kernel task is free to overflow its stack into adjacent heap objects in 
+order to escalate privilege.  Grsecurity places kernel stacks 
+non-contiguously in a separate memory region on 64-bit architectures to 
+avoid any such abuse.</p>
+	<div class="menufooter"><p><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Prevent_kernel_stack_overflows">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="mprotect">
+	<h3>Hardened userland memory permissions</h3>
+	<p>Though mainline Linux now supports NX and a weaker ASLR, by default 
+it does nothing to prevent the introduction of malicious code into a 
+process.  While initial control flow hijacking may occur through ROP, 
+the pattern consistently seen on Windows and other OSes is that the 
+majority of the exploit's payload is performed within allocated RWX 
+memory.  Grsecurity eliminates this weakness by default, greatly driving
+ up the costs of exploitation and raising the bar above the capabilities
+ of most attackers.</p>
+	<div class="menufooter"><p><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Restrict_mprotect.28.29">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="threadstack">
+	<h3>Random padding between thread stacks</h3>
+	<p>Linux distros generally do not compile code with the -fstack-check 
+flag to GCC, making it possible to exploit incorrectly-sized calls to 
+alloca().  By taking advantage of pthread's behavior of allocating 
+quickly-created thread stacks adjacent to each other, the stack of 
+another thread can be reliably modified to achieve exploitation.  
+Randomizing the offset between thread stacks removes the reliability of 
+this technique, generally reducing the exploit to a crash.</p>
+	<div class="menufooter"><p><a href="http://downloads.asterisk.org/pub/security/AST-2012-014.html">Asterisk Security Advisory AST-2012-014</a><br><a href="http://blog.exodusintel.com/2013/01/07/who-was-phone/">Exodus Intelligence post on remotely exploiting the Asterisk vulnerability</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Insert_random_gaps_between_thread_stacks">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="hardenjit">
+	<h3>Hardened BPF JIT against spray attacks</h3>
+	<p>The Linux kernel contains functionality that allows it to generate 
+machine code at runtime to speed up packet filtering and SECCOMP rules. 
+ This functionality can be abused by attackers as they are able to both 
+pre-determine the contents of the generated machine code and also fully 
+control certain arbitrary values within that content that permit them to
+ execute arbitrary code through an unintended instruction sequence.  
+Grsecurity uses a technique called "constant blinding" to prevent an 
+attacker from having enough control over the generated machine code to 
+launch a successful attack.  Unlike upstream's attempts at resolving 
+this problem, our solution is resistent to leaks of the location and 
+contents of the JIT-generated code.</p><p>In the default, JIT-disabled mode, grsecurity also protects the execution environment against a corrupted interpreter buffer.</p>
+	<div class="menufooter"><p><a href="http://mainisusuallyafunction.blogspot.com/2012/11/attacking-hardened-linux-systems-with.html">Blog post demonstrating BPF JIT spray attack</a><br><a href="http://www.matasano.com/research/Attacking_Clientside_JIT_Compilers_Paper.pdf">Paper by Chris Rolf on attacks against JIT compilers (Constant blinding, pg 22)</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Harden_BPF_JIT_against_spray_attacks">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="brute">
+	<h3>Automatically responds to exploit bruteforcing</h3>
+	<p>Even if all system-level infoleak sources and methods of entropy 
+reduction are closed down, there remains the fact that a Linux system is
+ generally unable to prevent bruteforcing of arbitrary network services 
+and suid/sgid binaries.  Grsecurity solves this issue by forcing a delay
+ between forks of network services being bruteforced and bans users from
+ executing suid/sgid apps for a period of time if they cause one to 
+crash.  Grsecurity takes a similar approach to preventing repeated 
+attempts at exploiting kernel vulnerabilities.  After the first detected
+ attempt causing an OOPS message, grsecurity bans that unprivileged user
+ from the system until restart.</p>
+	<div class="menufooter"><p><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Deter_exploit_bruteforcing">Configure help entry</a></p></div>
+</div>
+</div>
+	</div>
+	<div aria-hidden="true" aria-expanded="false" style="display: none;" role="tabpanel" class="ui-tabs-panel ui-widget-content ui-corner-bottom" aria-labelledby="ui-id-2" id="tabs-fsharden">
+<div class="fancylist">
+<ol class="rounded-list">
+<li><a class="menuitem" href="#chroot">Chroot hardening</a></li>
+<li><a class="menuitem" href="#symlinksifowner">Prevents users from tricking Apache into accessing other users' files</a></li>
+<li><a class="menuitem" href="#sidechannel">Eliminates side-channel attacks against admin terminals</a></li>
+<li><a class="menuitem" href="#tpe">Provides Trusted Path Execution</a></li>
+<li><a class="menuitem" href="#procrestrict">Hide other users' processes for unprivileged users</a></li>
+</ol>
+</div>
+<div class="menus"><div style="display: none;" class="menubox" id="chroot">
+	<h3>Chroot hardening</h3>
+	<p>grsecurity's chroot hardening automatically converts all uses of 
+chroot into real jails with confinement levels equivalent to containers.
+  Processes inside a chroot will not be able to create suid/sgid 
+binaries, see or attack processes outside the chroot jail, mount 
+filesystems, use sensitive capabilities, or modify UNIX domain sockets 
+or shared memory created outside the chroot jail.</p>
+	<div class="menufooter"><p><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Chroot_jail_restrictions">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="symlinksifowner">
+	<h3>Prevents users from tricking Apache into accessing other users' files</h3>
+	<p>If Apache is configured to allow following of symlinks, it is 
+trivial in most webhosting configurations to force it to reveal 
+sensitive data from other users' webroots.  While Apache has a feature 
+that aims to mitigate this risk, it suffers from an unsolvable 
+Time-Of-Check/Time-Of-Use (TOCTOU) race condition.  Grsecurity solves 
+this problem by enforcing at the kernel-level that Apache can't follow 
+symlinks owned by one user but pointing to the files of a different 
+user.</p>
+	<div class="menufooter"><p><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Kernel-enforced_SymlinksIfOwnerMatch">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="sidechannel">
+	<h3>Eliminates side-channel attacks against admin terminals</h3>
+	<p>Demonstrating our ability to swiftly respond to new threats, this 
+feature was developed the same day as Vladz' report on a side-channel 
+attack against the /dev/ptmx device.  While we immediately handled a 
+more generalized form of the attack, as of over a year later, upstream 
+Linux has still failed to prevent one of the two attack vectors 
+explicitly listed in the original report.</p>
+	<div class="menufooter"><p><a href="http://vladz.devzero.fr/013_ptmx-timing.php">Article by Vladz on leaking information about administrator passwords via /dev/ptmx</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Eliminate_stat.2Fnotify-based_device_sidechannels">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="tpe">
+	<h3>Provides Trusted Path Execution</h3>
+	<p>Trusted Path Execution (TPE) is an old and simple concept.  It dates
+ back to at least 1998 with route's Phrack 62 article linked below.  The
+ goal of TPE is to provide an easily-configurable and generally software
+ compatible method of preventing unprivileged users from executing 
+binaries they create.  Grsecurity extends the idea of TPE a bit and 
+resolves some vulnerabilities in the original design in the process (for
+ instance, TPE is not bypassed via ld.so under grsecurity).</p>
+	<div class="menufooter"><p><a href="http://www.phrack.org/issues.html?issue=52&amp;id=6#article">Initial 1998 Phrack article by route on TPE</a><br><a href="http://www.phrack.org/issues.html?issue=53&amp;id=8">Follow-up 1998 Phrack article on TPE</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Trusted_Path_Execution_.28TPE.29">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="procrestrict">
+	<h3>Hide other users' processes for unprivileged users</h3>
+	<p>While the upstream kernel now provides a mount option for /proc to 
+hide other unprivileged users' processes, grsecurity goes beyond this by
+ hiding such information by default, hiding additional sources of 
+sensitive information provided by the kernel in /proc, and hiding 
+private network-related information of all users.  Not only is the 
+networking information a violation of the privacy of other users on the 
+system, but it has also been useful in the past for TCP hijacking 
+attacks.</p>
+	<div class="menufooter"><p><a href="http://lwn.net/Articles/531090/">LWN article on TCP hijacking attacks made possible by /proc/net counters</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Proc_restrictions">Configure help entry</a></p></div>
+</div>
+</div>
+	</div>
+	<div aria-hidden="true" aria-expanded="false" style="display: none;" role="tabpanel" class="ui-tabs-panel ui-widget-content ui-corner-bottom" aria-labelledby="ui-id-3" id="tabs-mischarden">
+<div class="fancylist">
+<ol class="rounded-list">
+<li><a class="menuitem" href="#ptrace">Prevents ptrace-based process snooping</a></li>
+<li><a class="menuitem" href="#modharden">Prevents attackers from auto-loading vulnerable kernel modules</a></li>
+<li><a class="menuitem" href="#readexec">Prevents dumping unreadable binaries</a></li>
+<li><a class="menuitem" href="#multipriv">Enforces consistent multithreaded privileges</a></li>
+<li><a class="menuitem" href="#ipcharden">Denies access to overly-permissive IPC objects</a></li>
+</ol>
+</div>
+<div class="menus"><div style="display: none;" class="menubox" id="ptrace">
+	<h3>Prevents ptrace-based process snooping</h3>
+	<p>This feature was introduced to deal with ptrace-based userland 
+rootkits and other malicious process hijacking.  Importantly, it 
+preserves the ability of a user to debug his/her own programs through a 
+novel implementation that enforces a process can only attach to its 
+children.</p>
+	<div class="menufooter"><p><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Deter_ptrace-based_process_snooping">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="modharden">
+	<h3>Prevents attackers from auto-loading vulnerable kernel modules</h3>
+	<p>Your webhosting server has no need for a protocol used only in cars,
+ or one for HAM radios, but your distro's kernel configuration likely 
+causes modules for these to be built -- useful only for exploiting your 
+system.  While Linux distros continue to take a reactive approach (via 
+blacklisting) to vulnerable, rarely-legitimately used modules like 
+these, grsecurity uses a proactive approach that prevents unprivileged 
+users from auto-loading kernel modules.  The below list of example 
+exploits for vulnerable and rarely used kernel modules is far from 
+exhaustive, but is provided to serve as demonstration.</p>
+	<div class="menufooter"><p><a href="http://www.vsecurity.com/download/tools/linux-rds-exploit.c">Exploit for rarely-used RDS module</a><br><a href="http://downloads.securityfocus.com/vulnerabilities/exploits/36038-5.c">Exploit for Bluetooth and Appletalk modules</a><br><a href="http://www.exploit-db.com/exploits/926/">An older Bluetooth module exploit</a><br><a href="http://kernelbof.blogspot.com/2009/04/kernel-memory-corruptions-are-not-just.html">Exploit for SCTP module</a><br><a href="https://grsecurity.net/%7Espender/sctp.c">PoC for another trivial SCTP module vulnerability</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Harden_module_auto-loading">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="readexec">
+	<h3>Prevents dumping unreadable binaries</h3>
+	<p>On a normal distro kernel, it's not possible to allow a user to 
+execute a program without also giving away the full contents of the 
+program's binary image.  While direct reads are denied, a user can 
+ptrace themselves and then execute the binary, using ptrace to extract 
+out the entire mapped contents of the binary image -- even if that 
+binary is setuid root.  This information leak can be useful in creating 
+reliable exploits against custom-compiled binaries.  This weakness was 
+abused by Jason Donenfeld, for example, in his exploit for the 
+/proc/pid/mem kernel vulnerability.</p>
+	<div class="menufooter"><p><a href="http://blog.zx2c4.com/749">Jason Donenfeld's blog post on CVE-2012-0056</a><br><a href="http://git.zx2c4.com/CVE-2012-0056/tree/mempodipper.c">Exploit for CVE-2012-0056 (/proc/pid/mem vulnerability)</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Require_read_access_to_ptrace_sensitive_binaries">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="multipriv">
+	<h3>Enforces consistent multithreaded privileges</h3>
+	<p>Though glibc wraps calls to setuid() and setgid() with magic signals
+ that cause other threads in a process to change their credentials as 
+well, other libcs and multithreaded applications in other languages do 
+not do this, leading to unexpected vulnerable results of a thread 
+running as root that the developers believe is running unprivileged.  
+Since it's also conceptually wrong for threads sharing the same address 
+space to be running with radically different privilege, grsecurity 
+enforces glibc's behavior at the kernel level despite what language or 
+libc is involved in userland.</p>
+	<div class="menufooter"><p><a href="https://code.google.com/p/go/issues/detail?id=1435">Google Go gets bitten by multithreaded credential behavior</a><br><a href="https://bugs.launchpad.net/qemu/+bug/807893">QEMU privilege escalation vulnerability caused by multithreaded credential behavior</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Enforce_consistent_multithreaded_privileges">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="ipcharden">
+	<h3>Denies access to overly-permissive IPC objects</h3>
+	<p>This feature was developed in response to research done by 
+Portcullis Labs who surveyed use of shared memory in Linux software with
+ surprising results -- many were unnecessarily granting all users on the
+ system the ability to read and or write their created shared memory.  
+Since in many cases this can result in security vulnerabilities, 
+grsecurity locks down access to overly-permissive shared memory and 
+other IPC objects in such a way that does not impact normal operations.</p>
+	<div class="menufooter"><p><a href="http://labs.portcullis.co.uk/whitepapers/memory-squatting-attacks-on-system-v-shared-memory/">Research by Portcullis Labs on attacking overly-permissive shared memory</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Disallow_access_to_overly-permissive_IPC_objects">Configure help entry</a></p></div>
+</div>
+</div>
+	</div>
+	<div aria-hidden="true" aria-expanded="false" style="display: none;" role="tabpanel" class="ui-tabs-panel ui-widget-content ui-corner-bottom" aria-labelledby="ui-id-4" id="tabs-rbac">
+<div class="fancylist">
+<ol class="rounded-list">
+<li><a class="menuitem" href="#full_learn">Automatic full system policy learning</a></li>
+<li><a class="menuitem" href="#human_read">Human-readable policies and logs</a></li>
+<li><a class="menuitem" href="#intuitive">Intuitive design</a></li>
+<li><a class="menuitem" href="#autoanalyze">Automated policy analysis</a></li>
+<li><a class="menuitem" href="#unconvent">Unconventional features</a></li>
+<li><a class="menuitem" href="#lsm">Stackable with LSM</a></li>
+</ol>
+</div>
+<div class="menus"><div style="display: none;" class="menubox" id="full_learn">
+	<h3>Automatic full system policy learning</h3>
+	<p>Grsecurity's RBAC has provided the very first learning system that 
+can automatically generate least-privilege full system policies without 
+manual configuration.  While the default learning heuristics will 
+provide secure results for most users while predicting future access 
+needs, it also supports a simple human-readable configuration file to 
+drive the policy generation.  Have a directory specific to your system 
+that you wish to ensure is protected by policy?  A single line in the 
+configuration file will create a security boundary around any process 
+that reads or writes to files in that directory.  Users will find that 
+in most cases, full system learning will produce a more secure policy 
+than one created by hand.</p>
+	<div class="menufooter"><p><a href="http://secgroup.ext.dsi.unive.it/wp-content/uploads/2012/04/PID2308633-camera.pdf">Academic analysis from 2012 of security properties of auto-generated policies from grsecurity's full system RBAC learning</a><br></p></div>
+</div>
+<div style="display: none;" class="menubox" id="human_read">
+	<h3>Human-readable policies and logs</h3>
+	<p>If you've ever developed SELinux policies, grsecurity's RBAC 
+policies will be a breath of fresh air.  Our policies are similar in 
+appearance to those of AppArmor, though more intuitive.  Logs display 
+full paths for the violating process and its parent and describes the 
+nature of the violation in an easily-understandable way.  You won't need
+ to be an expert on system call names and rummage through logs stuffed 
+into the same restrictive template to determine the reason for a policy 
+violation in grsecurity's RBAC system.</p>
+	<div class="menufooter"><p><a href="https://en.wikibooks.org/wiki/Grsecurity/The_RBAC_System#Policy_Structure">Excerpt of a grsecurity RBAC policy</a><br></p></div>
+</div>
+<div style="display: none;" class="menubox" id="intuitive">
+	<h3>Intuitive design</h3>
+	<p>The organization of grsecurity's RBAC policies makes intuitive 
+sense.  Roles apply to users or groups (with allowance for "special" 
+roles that can be entered with or without authentication).  These roles 
+contain a collection of subjects which describe policies for binaries 
+and scripts on the system.  Subjects contain a collection of objects, 
+which are the files, capabilities, network sockets, and resources a 
+process is permitted to use.  Combined with the human-readable policies,
+ many users find they are able to jump right in to creating meaningful 
+security policies either through full system learning or by using full 
+system learning as a starting example policy.</p>
+</div>
+<div style="display: none;" class="menubox" id="autoanalyze">
+	<h3>Automated policy analysis</h3>
+	<p>Unlike other access control systems, grsecurity's RBAC was not 
+designed to be an all-permissive framework -- it has the specific 
+purpose of locking down access to the entire system.  Because it has a 
+specific goal, it allows us to implement mandatory policy analysis that 
+catches administrator mistakes and prevents an administrator from 
+deploying a policy that would provide a false sense of security.  Any 
+errors found in the policy are described with human-readable, meaningful
+ explanations of what kinds of attacks would be possible if the policy 
+were allowed to be loaded (as it would be in other access control 
+systems).</p>
+</div>
+<div style="display: none;" class="menubox" id="unconvent">
+	<h3>Unconventional features</h3>
+	<p>Grsecurity does not use LSM and thus is not constrained by the set 
+of hooks LSM provides.  With this freedom it is able to implement a 
+number of unconventional features not possible in any LSM.  Grsecurity 
+allows overriding and auto-learning of resource limits on a per-subject 
+basis, provides per-subject limits on the number of times a service can 
+crash in a given time interval, can limit access to roles by IP address,
+ tags policy violation logs with the IP address of the originator of the
+ violation, provides mandatory control over per-subject PaX flags, 
+supports policies on individual scripts run directly, and many more 
+features not available elsewhere.</p>
+</div>
+<div style="display: none;" class="menubox" id="lsm">
+	<h3>Stackable with LSM</h3>
+	<p>As grsecurity has never used LSM, it does not suffer from a major 
+problem that LSM has been unable to resolve in over 14 years: it does 
+not permit multiple LSMs to be enabled at the same time.  Thus while 
+SELinux's default policies cannot be used in conjunction with AppArmor, 
+grsecurity can be used in combination with SELinux, AppArmor, or any 
+other LSM if such a requirement exists.</p>
+	<div class="menufooter"><p><a href="https://grsecurity.net/lsm.php">Why grsecurity doesn't use LSM</a><br></p></div>
+</div>
+</div>
+	</div>
+	<div aria-hidden="true" aria-expanded="false" style="display: none;" role="tabpanel" class="ui-tabs-panel ui-widget-content ui-corner-bottom" aria-labelledby="ui-id-5" id="tabs-gcc">
+<div class="fancylist">
+<ol class="rounded-list">
+<li><a class="menuitem" href="#randstruct">Randomized kernel structure layouts</a></li>
+<li><a class="menuitem" href="#size_overflow">Prevents integer overflows in size arguments</a></li>
+<li><a class="menuitem" href="#latent_entropy">Adds entropy at early boot and runtime</a></li>
+<li><a class="menuitem" href="#constify">Makes read-only sensitive kernel structures</a></li>
+<li><a class="menuitem" href="#kernexec">Ensures all kernel function pointers point into the kernel</a></li>
+<li><a class="menuitem" href="#stackleak">Prevents leaking of stack data from previous syscalls</a></li>
+</ol>
+</div>
+<div class="menus"><div style="display: none;" class="menubox" id="randstruct">
+	<h3>Randomized kernel structure layouts</h3>
+	<p>The RANDSTRUCT plugin forces some exploits into requiring additional
+ information leaks to achieve reliability.  It does this by randomizing 
+the layout of sensitive selected kernel structures as well as 
+automatically randomizing the layout of all structures comprised purely 
+of function pointers -- a common target for exploits.</p>
+	<div class="menufooter"><p><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Randomize_layout_of_sensitive_kernel_structures">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="size_overflow">
+	<h3>Prevents integer overflows in size arguments</h3>
+	<p>Integer overflows are a common bug class in the kernel.  This 
+feature was first realized as a clever macro to deal with overflows 
+occuring in size expressions of kernel memory allocators, but was 
+replaced and greatly expanded in scope by Emese Revfy with what is now 
+our largest GCC plugin.  This powerful plugin can detect and prevent 
+exploitation of a wide range of integer overflow and integer truncation 
+bugs that are likely to result in exploitable conditions.</p>
+	<div class="menufooter"><p><a href="https://grsecurity.net/%7Espender/i915_size_overflow.txt">Log demonstrating size_overflow plugin preventing exploitation of a $40,000 vulnerability at Pwnium 3 (CVE-2013-0913)</a><br><a href="https://forums.grsecurity.net/viewtopic.php?f=7&amp;t=3043">Emese Revfy's blog post on the size_overflow plugin</a><br><a href="http://www.openwall.com/lists/oss-security/2013/03/11/8">CVE-2013-0914: local ASLR infoleak detected by the plugin</a><br><a href="http://web.nvd.nist.gov/view/vuln/detail?vulnId=CVE-2013-2141">CVE-2013-2141: kernel infoleak discovered by the plugin</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Prevent_various_integer_overflows_in_function_size_parameters">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="latent_entropy">
+	<h3>Adds entropy at early boot and runtime</h3>
+	<p>Providing enough randomness, especially at early boot, has been a 
+constant struggle for Linux.  While on the Intel platform, Ivy Bridge 
+and newer processor models that support RDRAND generally eliminate the 
+problem of entropy starvation at early boot and runtime, older 
+processors and those of other architectures continue to be plagued by 
+this problem.  The demonstrable effects of this include weak private 
+keys on embedded systems, weak randomness on VM guests, predictable 
+stack canaries, and more.  PaX's latent entropy plugin included in 
+grsecurity addresses the lack of randomness by modifying the instruction
+ streams of functions called only during boot as well as some specific 
+functions at runtime that perform some unpredictable computations from 
+the perspective of an attacker.  These functions are modified to produce
+ a nondeterministic value based on the flow of execution.  At several 
+points in the boot process and at runtime, this pseudorandom value is 
+mixed in to the entropy pool.  Further, a kernel compiled with this 
+plugin will have the various random pools in the kernel initialized at 
+compile-time to random contents.</p>
+	<div class="menufooter"><p><a href="https://grsecurity.net/pipermail/grsecurity/2012-July/001093.html">Initial, outdated description of latent entropy plugin</a><br><a href="https://factorable.net/">Research on widespread weak keys in network devices</a><br><a href="http://accepted.100871.net/jni.pdf">Research showing predictable stack canaries on Android due to low entropy</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Generate_some_entropy_during_boot_and_runtime">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="constify">
+	<h3>Makes read-only sensitive kernel structures</h3>
+	<p>For some years, grsecurity had maintained a large patch that 
+systematically constified a few dozen structure types used frequently in
+ the kernel -- collections of function pointers, or so-called "ops 
+structures".  This patch, weighing in at over 1MB, became time-consuming
+ to maintain and upstream kernel developers did not accept the patch 
+wholesale (responsive maintainers adopted patches specific to their 
+domain, but many unresponsive maintainers did not).  Creation of the 
+CONSTIFY plugin allowed us to generalize the approach and apply it to 
+hundreds of additional structure types, currently causing up to 75% of 
+function pointers in the kernel image to be made read-only.</p>
+	<div class="menufooter"><p><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Automatically_constify_eligible_structures">Configure help entry</a></p></div>
+</div>
+<div style="display: none;" class="menubox" id="kernexec">
+	<h3>Ensures all kernel function pointers point into the kernel</h3>
+	<p>This plugin supplements the protection provided by PaX's KERNEXEC 
+feature on the X64 architecture.  While on i386 KERNEXEC is able to 
+prevent execution of userland code using segmentation, that is not 
+possible on X64.  This plugin forces the upper bit on in all function 
+pointers and return addresses dereferenced by the kernel.  This doesn't 
+impact legitimate kernel code, but causes attempts to return to userland
+ code to result in a non-canonical address that will cause a GPF upon 
+access.  Modulo attacks on kernel paging structures, this feature is not
+ needed if PaX's UDEREF is enabled.</p>
+	<div class="menufooter"><p><a href="https://lwn.net/Articles/461811/">LWN comment from PaX Team discussing KERNEXEC GCC plugin</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Return_Address_Instrumentation_Method">Configure help entry</a></p></div>
+</div>
+<div style="display: block;" class="menubox" id="stackleak">
+	<h3>Prevents leaking of stack data from previous syscalls</h3>
+	<p>Information leaks of kernel stack data are the most common type of 
+leaks in the kernel and potentially the most dangerous.  The reason for 
+this is that the data arising from an uninitialized structure field can 
+possibly come from data on the kernel stack from a previous system call 
+invocation.  By carefully choosing a system call to leave stale data on 
+the stack, an attacker can leak the addresses to a wide number of 
+sensitive kernel structures.  The STACKLEAK plugin addresses this issue 
+by clearing the portion of the kernel stack that was used during a 
+system call before returning to userland.  This ensures that if any leak
+ of an uninitialized field is possible, it must come from a 
+previously-called function in the current system call.  This plugin also
+ prevents dynamic stack-based allocation in the kernel from overflowing 
+the kernel stack, which would normally permit an attacker to corrupt an 
+adjacent memory object in order to exploit the system.</p>
+	<div class="menufooter"><p><a href="https://pax.grsecurity.net/docs/PaXTeam-H2HC13-PaX-gcc-plugins.pdf">PaX presentation on its GCC plugins, mentions STACKLEAK on slide 36</a><br><a href="https://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options#Sanitize_kernel_stack">Configure help entry</a></p></div>
+</div>
+</div>
+	</div>
+	</div>
+	<script src="grsecurity_files/features.js"></script>
+                </div>
+        </div>
+        <div class="clearbr"></div>
+</div>
+        <div class="sponsors_footer_background">
+		<div class="sponsors_footer">
+        <a href="http://grsecurity.net/sponsors.php"><img src="grsecurity_files/sp_bar.png" alt="Sponsors" border="0"></a>
+        <div class="sponsors_line"></div>
+<a href="http://www.prometheusglobal.com/" onclick="javascript: _gaq.push(['_trackPageview', '/sponsors-out/Prometheus Global']);"><img class="noborder" src="grsecurity_files/prometheus_global.png" alt="Prometheus Global"></a><a href="http://www.enduranceinternational.com/" onclick="javascript: _gaq.push(['_trackPageview', '/sponsors-out/Endurance International Group']);"><img class="noborder" src="grsecurity_files/eig.png" alt="Endurance International Group"></a><a href="http://www.site5.com/" onclick="javascript: _gaq.push(['_trackPageview', '/sponsors-out/Site5 LLC']);"><img class="noborder" src="grsecurity_files/site5.png" alt="Site5 LLC"></a></div>
+        </div>
+
+        <div class="footer_background">
+                <div class="footer">
+			<a href="http://grsecurity.net/index.php" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Home']);">Home</a> | <a href="http://forums.grsecurity.net/viewforum.php?f=7" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Blog']);">Blog</a> | <a href="http://en.wikibooks.org/wiki/Grsecurity" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Documentation']);">Documentation</a> | <a href="http://en.wikibooks.org/wiki/Grsecurity/Appendix/Grsecurity_and_PaX_Configuration_Options" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Features']);">Features</a> | <a href="http://grsecurity.net/links.php" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Links']);">Links</a> | <a href="http://grsecurity.net/contribute.php" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Contribute']);">Contribute</a> | <a href="http://grsecurity.net/research.php" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Research']);">Research</a> | <a href="http://grsecurity.net/papers.php" onclick="javascript: _gaq.push(['_trackPageview', '/docs/Papers']);">Papers</a><br><br>
+                        Contact: spender@grsecurity.net | © Open Source Security , Inc 2013-2015 | XHTML/CSS by <a href="https://bitbucket.org/piotrkarbowski">Piotr Karbowski</a><br>
+			grsecurity<sup>®</sup> is a registered trademark of Open Source Security, Inc.
+                </div>
+        </div>
+
+
+
+
+
+
+</body></html>
